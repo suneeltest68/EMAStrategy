@@ -1,0 +1,32 @@
+# Gradle build outputs and caches
+.gradle/
+build/
+app/build/
+out/
+bin/
+
+# IDE files (IntelliJ / Android Studio)
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+*.ids
+local.properties
+
+# Logs and runtime artifacts
+*.log
+.env
+token.json
+active_trades.json
+trading_journal.json
+Backtest Outputs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
