@@ -157,7 +157,7 @@ fun parseFyersCandles(json: JSONObject): List<Candle> {
     } catch (e: Exception) {
         throw RuntimeException("Error parsing Fyers candles: ${e.message}")
     }
-    return candles
+    return candles.distinctBy { it.timestamp }.sortedBy { it.timestamp }
 }
 
 /**
