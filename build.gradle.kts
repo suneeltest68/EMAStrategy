@@ -9,6 +9,7 @@ kotlin {
 
 application {
     mainClass.set("com.example.MainKt")
+    applicationName = "cww"
 }
 
 repositories {
