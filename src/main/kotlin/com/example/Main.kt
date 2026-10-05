@@ -104,19 +104,19 @@ fun main() {
  * Fetches NIFTY index data, runs strategy signals from September 30th to October 5th, 2026, and resolves weekly options.
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
+//    val rangeStart = "2026-10-05"
     val rangeStart = "2026-09-30"
     val rangeEnd = "2026-10-05"
-    val rangeFrom = "2026-09-15"
-    val rangeTo = "2026-10-06"
-    
-    println("\n[3] Fetching Nifty 50 Historical Data from Fyers API ($rangeFrom to $rangeTo)...")
+    val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
+
+    println("\n[3] Fetching Nifty 50 Historical Data from Fyers API ($rangeFrom to $rangeEnd)...")
     val history = viewModel.fetchHistoricalDataInChunks(
         appId = appId,
         accessToken = token,
         symbol = "NSE:NIFTY50-INDEX",
         resolution = "5",
         rangeFrom = rangeFrom,
-        rangeTo = rangeTo
+        rangeTo = rangeEnd
     )
 
     if (history != null) {
@@ -129,7 +129,7 @@ suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: S
             throw IllegalStateException("Fetched history JSON from Fyers contained no candles.")
         }
     } else {
-        throw IllegalStateException("Failed to fetch historical data from Fyers API for range $rangeFrom to $rangeTo.")
+        throw IllegalStateException("Failed to fetch historical data from Fyers API for range $rangeFrom to $rangeEnd.")
     }
 }
 
