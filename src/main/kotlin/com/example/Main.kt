@@ -281,7 +281,7 @@ suspend fun runDerivativeBacktestForRange(
                 entryDate = candleDate
                 val optionType = if (isLong) "CE" else "PE"
                 
-                // Resolve weekly option symbol strictly via live Fyers option chain lookup
+                // Resolve weekly option symbol strictly via live Fyers option chain lookup (expiryIndex = 1 for next week)
                 derivativeSymbol = OptionUtils.resolveWeeklyOptionSymbol(
                     viewModel = viewModel,
                     appId = appId,
@@ -289,7 +289,7 @@ suspend fun runDerivativeBacktestForRange(
                     indexSymbol = "NSE:NIFTY50-INDEX",
                     spotPrice = entrySpot,
                     optionType = optionType,
-                    expiryCode = "26O01"
+                    expiryIndex = 1
                 )
 
                 println("🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime")

@@ -1,6 +1,5 @@
 package com.example.util
 
-import kotlin.math.abs
 import kotlin.math.round
 
 object OptionUtils {
@@ -27,8 +26,9 @@ object OptionUtils {
     }
 
     /**
-     * Resolves the exact weekly option symbol strictly via live Fyers option chain lookup.
-     * Throws an exception if the option chain fails or the strike symbol is not found.
+     * Resolves the exact weekly option symbol using the expiry date from the option chain's expiryData.
+     * @param expiryIndex 0 for current week, 1 for next week, etc. (based on option chain expiryData)
+     * Throws an exception if the option chain fails or the expiry date is not found.
      */
     suspend fun resolveWeeklyOptionSymbol(
         viewModel: com.example.viewmodel.AuthViewModel,
@@ -37,7 +37,7 @@ object OptionUtils {
         indexSymbol: String,
         spotPrice: Double,
         optionType: String,
-        expiryCode: String = "26O01"
+        expiryIndex: Int = 1
     ): String {
         val strikeInterval = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true)) 100 else 50
         val atmStrike = calculateAtmStrike(spotPrice, strikeInterval)
@@ -45,23 +45,49 @@ object OptionUtils {
         val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
             ?: throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol")
 
+        var expiryDateStr: String? = null
         if (optionChain.has("data")) {
             val dataObj = optionChain.getJSONObject("data")
-            if (dataObj.has("optionsChain")) {
-                val optionsArray = dataObj.getJSONArray("optionsChain")
-                for (i in 0 until optionsArray.length()) {
-                    val optObj = optionsArray.getJSONObject(i)
-                    val strike = optObj.optDouble("strike_price", 0.0)
-                    val symbol = optObj.optString("symbol", "")
-                    val type = optObj.optString("option_type", "")
-
-                    if (abs(strike - atmStrike.toDouble()) < 1.0 && type.equals(optionType, ignoreCase = true)) {
-                        if (symbol.isNotEmpty()) return symbol
-                    }
+            if (dataObj.has("expiryData")) {
+                val expiryArray = dataObj.getJSONArray("expiryData")
+                if (expiryIndex in 0 until expiryArray.length()) {
+                    val expiryObj = expiryArray.getJSONObject(expiryIndex)
+                    expiryDateStr = expiryObj.optString("date", "") // e.g., "13-10-2026"
                 }
             }
         }
-        throw IllegalStateException("Could not find matching option symbol for strike $atmStrike $optionType in option chain response")
+
+        if (expiryDateStr.isNullOrEmpty() || expiryDateStr.length < 10) {
+            throw IllegalStateException("Could not find expiry date for expiryIndex $expiryIndex in option chain response")
+        }
+
+        val day = expiryDateStr.substring(0, 2)
+        val monthNum = expiryDateStr.substring(3, 5)
+        val year = expiryDateStr.substring(8, 10)
+        val monthLetter = when (monthNum) {
+            "01" -> "F"
+            "02" -> "G"
+            "03" -> "H"
+            "04" -> "J"
+            "05" -> "K"
+            "06" -> "L"
+            "07" -> "M"
+            "08" -> "N"
+            "09" -> "P"
+            "10" -> "O"
+            "11" -> "Q"
+            "12" -> "R"
+            else -> ""
+        }
+
+        if (monthLetter.isEmpty()) {
+            throw IllegalStateException("Invalid month number $monthNum in expiry date $expiryDateStr")
+        }
+
+        val expiryCode = "$year$monthLetter$day" // e.g. "26O13"
+        val underlyingPrefix = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true)) "NSE:BANKNIFTY" else "NSE:NIFTY"
+
+        return "$underlyingPrefix$expiryCode$atmStrike$optionType"
     }
 
     /**
