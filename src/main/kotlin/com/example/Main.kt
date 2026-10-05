@@ -104,9 +104,9 @@ fun main() {
  * Fetches NIFTY index data, runs strategy signals from September 30th to October 5th, 2026, and resolves weekly options.
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
-    val rangeStart = "2026-10-05"
+    val rangeStart = "2026-09-30"
     val rangeEnd = "2026-10-05"
-    val rangeFrom = "2026-09-15" // Warmup window
+    val rangeFrom = "2026-09-15"
     val rangeTo = "2026-10-06"
     
     println("\n[3] Fetching Nifty 50 Historical Data from Fyers API ($rangeFrom to $rangeTo)...")
@@ -161,6 +161,56 @@ fun parseFyersCandles(json: JSONObject): List<Candle> {
 }
 
 /**
+ * Helper to fetch derivative 1-min candles for a given date range.
+ */
+suspend fun fetchDerivativeCandles(
+    viewModel: AuthViewModel,
+    appId: String,
+    token: String,
+    symbol: String,
+    from: String,
+    to: String
+): List<Candle> {
+    val history = viewModel.fetchHistoricalDataInChunks(appId, token, symbol, "1", from, to)
+        ?: viewModel.fetchHistoricalData(appId, token, symbol, "1", from, to)
+        ?: throw IllegalStateException("Failed to fetch 1-min historical data for derivative symbol $symbol from $from to $to")
+    val candles = parseFyersCandles(history)
+    if (candles.isEmpty()) {
+        throw IllegalStateException("No 1-min candles returned for derivative symbol $symbol from $from to $to")
+    }
+    return candles
+}
+
+/**
+ * Helper to record a completed trade and add to P&L.
+ */
+fun recordTrade(
+    tradeNo: Int,
+    direction: String,
+    entryTime: String,
+    exitTime: String,
+    derivativeSymbol: String,
+    entryOptionPrice: Double,
+    exitOptionPrice: Double,
+    completedTrades: MutableList<OptionTradeResult>
+): Double {
+    val pnl = exitOptionPrice - entryOptionPrice
+    completedTrades.add(
+        OptionTradeResult(
+            tradeNo = tradeNo,
+            direction = direction,
+            entryTime = entryTime,
+            exitTime = exitTime,
+            derivativeSymbol = derivativeSymbol,
+            entryOptionPrice = entryOptionPrice,
+            exitOptionPrice = exitOptionPrice,
+            pnl = pnl
+        )
+    )
+    return pnl
+}
+
+/**
  * Executes the backtest: runs signals on NIFTY index and resolves weekly option symbols strictly via option chain lookup.
  */
 suspend fun runDerivativeBacktestForRange(
@@ -182,6 +232,7 @@ suspend fun runDerivativeBacktestForRange(
     
     var activePosition: EmaTrendPositionContext? = null
     var entryTime = ""
+    var entryDate = ""
     var derivativeSymbol = ""
     var entryOptionPrice = 0.0
     var totalOptionPnl = 0.0
@@ -194,6 +245,30 @@ suspend fun runDerivativeBacktestForRange(
         val candleDate = ic.timestamp.substring(0, 10)
         if (candleDate < startDate || candleDate > endDate) continue
 
+        val timePart = ic.timestamp.substring(11, 16)
+
+        // Intraday rule: Ensure any active position from a previous day is squared off by 15:25 of entryDate
+        if (activePosition != null && candleDate > entryDate) {
+            val exitTime = "$entryDate 15:25"
+            val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime }
+                ?: derivativeCandles.lastOrNull()
+            
+            if (exitDerivativeBar != null) {
+                totalOptionPnl += recordTrade(
+                    tradeNo = tradeCount,
+                    direction = activePosition.direction,
+                    entryTime = entryTime,
+                    exitTime = exitDerivativeBar.timestamp,
+                    derivativeSymbol = derivativeSymbol,
+                    entryOptionPrice = entryOptionPrice,
+                    exitOptionPrice = exitDerivativeBar.close,
+                    completedTrades = completedTrades
+                )
+            }
+            activePosition = null
+            derivativeCandles = emptyList()
+        }
+
         val slice = indicatorCandles.subList(0, i + 1)
         val decision = engine.evaluate(slice, activePosition)
 
@@ -203,6 +278,7 @@ suspend fun runDerivativeBacktestForRange(
                 val isLong = decision.action == "ENTER_LONG"
                 val entrySpot = ic.close
                 entryTime = ic.timestamp
+                entryDate = candleDate
                 val optionType = if (isLong) "CE" else "PE"
                 
                 // Resolve weekly option symbol strictly via live Fyers option chain lookup
@@ -218,19 +294,7 @@ suspend fun runDerivativeBacktestForRange(
 
                 println("🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime")
 
-                val derivativeHistory = viewModel.fetchHistoricalData(
-                    appId = appId,
-                    accessToken = token,
-                    symbol = derivativeSymbol,
-                    resolution = "1",
-                    rangeFrom = candleDate,
-                    rangeTo = candleDate
-                ) ?: throw IllegalStateException("Failed to fetch 1-min historical data for derivative symbol $derivativeSymbol on $candleDate")
-
-                derivativeCandles = parseFyersCandles(derivativeHistory)
-                if (derivativeCandles.isEmpty()) {
-                    throw IllegalStateException("No 1-min candles returned for derivative symbol $derivativeSymbol on $candleDate")
-                }
+                derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
 
                 val entryDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime }
                     ?: throw IllegalStateException("No 1-min derivative candle found at or after entry time $entryTime for $derivativeSymbol")
@@ -243,26 +307,26 @@ suspend fun runDerivativeBacktestForRange(
                 )
             }
         } else {
-            if (decision.action == "EXIT") {
-                val exitTime = ic.timestamp
-                val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime }
-                    ?: throw IllegalStateException("No 1-min derivative candle found at or after exit time $exitTime for $derivativeSymbol")
-                val exitOptionPrice = exitDerivativeBar.close
-                
-                val optionPnl = exitOptionPrice - entryOptionPrice
-                totalOptionPnl += optionPnl
+            // Intraday rule: Auto square-off at 15:25 or strategy EXIT
+            val isSquareOff = timePart >= "15:25"
+            if (decision.action == "EXIT" || isSquareOff) {
+                val exitTime = if (isSquareOff && timePart > "15:25") "$candleDate 15:25" else ic.timestamp
+                val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime } ?: run {
+                    derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, entryDate, candleDate)
+                    derivativeCandles.firstOrNull { it.timestamp >= exitTime }
+                        ?: derivativeCandles.lastOrNull()
+                        ?: throw IllegalStateException("No 1-min derivative candle found at or after exit time $exitTime for $derivativeSymbol")
+                }
 
-                completedTrades.add(
-                    OptionTradeResult(
-                        tradeNo = tradeCount,
-                        direction = if (activePosition.direction == "LONG") "LONG" else "SHORT",
-                        entryTime = entryTime,
-                        exitTime = exitTime,
-                        derivativeSymbol = derivativeSymbol,
-                        entryOptionPrice = entryOptionPrice,
-                        exitOptionPrice = exitOptionPrice,
-                        pnl = optionPnl
-                    )
+                totalOptionPnl += recordTrade(
+                    tradeNo = tradeCount,
+                    direction = activePosition.direction,
+                    entryTime = entryTime,
+                    exitTime = exitDerivativeBar.timestamp,
+                    derivativeSymbol = derivativeSymbol,
+                    entryOptionPrice = entryOptionPrice,
+                    exitOptionPrice = exitDerivativeBar.close,
+                    completedTrades = completedTrades
                 )
 
                 activePosition = null
