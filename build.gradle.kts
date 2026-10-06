@@ -32,3 +32,18 @@ dependencies {
 tasks.test {
     useJUnit()
 }
+
+tasks.register<Jar>("fatJar") {
+    archiveClassifier.set("all")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(sourceSets.main.get().output)
+    from({
+        configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) }
+    })
+    from({
+        file("libs").listFiles()?.filter { it.extension == "jar" }?.map { zipTree(it) } ?: emptyList()
+    })
+    manifest {
+        attributes["Main-Class"] = "com.example.LiveSchedulerKt"
+    }
+}
