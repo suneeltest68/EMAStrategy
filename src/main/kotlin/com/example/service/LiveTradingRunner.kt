@@ -151,6 +151,7 @@ class LiveTradingRunner(
                         val indicatorCandles = TechnicalIndicators.buildIndicators(freshCandles, config)
                         val lastIc = indicatorCandles.last()
                         val timePart = lastIc.timestamp.substring(11, 16)
+                        println("[Live Status] Check at ${lastIc.timestamp} | Nifty Close: ${lastIc.close} | EMA4: ${String.format("%.2f", lastIc.ema4)} | EMA11: ${String.format("%.2f", lastIc.ema11)} | EMA18: ${String.format("%.2f", lastIc.ema18)} | Position: ${activePosition?.direction ?: "FLAT"}")
 
                         if (activePosition != null && (currentTime.isAfter(squareOffTime) || currentTime == squareOffTime || lastIc.timestamp.substring(0, 10) > entryDate)) {
                             val exitTime = "$entryDate 15:25"
