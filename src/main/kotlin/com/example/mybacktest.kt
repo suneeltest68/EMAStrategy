@@ -28,6 +28,7 @@ import io.github.cdimascio.dotenv.dotenv
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.time.Instant
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Scanner
@@ -106,10 +107,10 @@ fun main() {
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
 //    val rangeStart = "2026-10-05"
-//    val rangeStart = "2026-09-30"
-//    val rangeEnd = "2026-10-05"
-    val rangeStart = java.time.LocalDate.now().toString()
-    val rangeEnd = java.time.LocalDate.now().toString()
+    val rangeStart = "2026-09-30"
+    val rangeEnd = "2026-10-06"
+//    val rangeStart = java.time.LocalDate.now().toString()
+//    val rangeEnd = java.time.LocalDate.now().toString()
     val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
 
     println("\n[3] Fetching Nifty 50 Historical Data from Fyers API ($rangeFrom to $rangeEnd)...")
@@ -289,8 +290,14 @@ suspend fun runDerivativeBacktestForRange(
                 tradeCount++
                 val isLong = decision.action == "ENTER_LONG"
                 val entrySpot = ic.close
-                entryTime = ic.timestamp
-                entryDate = candleDate
+
+                /*entryTime = ic.timestamp
+                entryDate = candleDate*/
+
+                entryTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                    .plusMinutes(5)
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                entryDate = entryTime.substring(0, 10)
                 val optionType = if (isLong) "CE" else "PE"
 
                 // Resolve weekly option symbol strictly via live Fyers option chain lookup (expiryIndex = 1 for next week)
@@ -306,11 +313,12 @@ suspend fun runDerivativeBacktestForRange(
 
                 println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m")
 
-                if (entryTime != "2026-10-06 09:30")
-                    TelegramNotifier.sendAlert("🚀 We got a trade signal at $entryTime")
+//                if (entryTime != "2026-10-06 09:30")
+//                    TelegramNotifier.sendAlert("🚀 We got a trade signal at $entryTime")
 
                 derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
 
+                // Here if entry comes at 9:30 candle close , we are fetching data at 9:35:02 second , so order gets executed at 9:35:02 so we are considering open price od 9:35
                 val entryDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime }
                     ?: throw IllegalStateException("No 1-min derivative candle found at or after entry time $entryTime for $derivativeSymbol")
                 entryOptionPrice = entryDerivativeBar.open
@@ -325,7 +333,14 @@ suspend fun runDerivativeBacktestForRange(
             // Intraday rule: Auto square-off at 15:25 or strategy EXIT
             val isSquareOff = timePart >= "15:25"
             if (decision.action == "EXIT" || isSquareOff) {
-                val exitTime = if (isSquareOff && timePart > "15:25") "$candleDate 15:25" else ic.timestamp
+
+                // Here if exit comes at 10:30 candle close , we are fetching data at 10:35:02 second , so order gets executed at 10:35:02 so we are considering open price of 10:35
+
+                val validExitTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                    .plusMinutes(5)
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+
+                val exitTime = if (isSquareOff && timePart > "15:25") "$candleDate 15:25" else validExitTime
                 val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime } ?: run {
                     derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, entryDate, candleDate)
                     derivativeCandles.firstOrNull { it.timestamp >= exitTime }
