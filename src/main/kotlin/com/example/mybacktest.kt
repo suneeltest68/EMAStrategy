@@ -15,6 +15,7 @@
  */
 package com.example
 
+import com.example.service.TelegramNotifier
 import com.example.viewmodel.AuthViewModel
 import com.example.util.AuthUtils
 import com.example.util.OptionUtils
@@ -304,6 +305,10 @@ suspend fun runDerivativeBacktestForRange(
                 )
 
                 println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m")
+
+                if (entryTime != "2026-10-06 09:30")
+                    TelegramNotifier.sendAlert("🚀 We got a trade signal at $entryTime")
+
                 derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
 
                 val entryDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime }
