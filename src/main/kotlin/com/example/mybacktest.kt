@@ -365,17 +365,51 @@ suspend fun runDerivativeBacktestForRange(
         }
     }
 
-    // Print summary table without Cumulative P&L
-    println("\n==========================================================================================")
-    println("WEEKLY EXPIRY OPTION BACKTEST SUMMARY TABLE (SEPT 30 - OCT 5)")
-    println("==========================================================================================")
-    println("| # | Signal | Entry Time | Exit Time | Derivative Symbol | Entry Opt | Exit Opt | P&L (Pts) |")
-    println("|---|--------|------------|-----------|-------------------|-----------|----------|-----------|")
+    // Print summary table with Cumulative P&L and Max Drawdown details
+    println("\n==========================================================================================================")
+    println("WEEKLY EXPIRY OPTION BACKTEST SUMMARY TABLE & MAX DRAWDOWN REPORT (SEPT 30 - OCT 5)")
+    println("==========================================================================================================")
+    println("| # | Signal | Entry Time | Exit Time | Derivative Symbol | Entry Opt | Exit Opt | P&L (Pts) | Cum. P&L |")
+    println("|---|--------|------------|-----------|-------------------|-----------|----------|-----------|----------|")
+
+    var runningPnl = 0.0
+    var peak = 0.0
+    var maxDD = 0.0
+    var wins = 0
+    var losses = 0
+    var gProfit = 0.0
+    var gLoss = 0.0
+
     for (t in completedTrades) {
+        runningPnl += t.pnl
+        if (runningPnl > peak) peak = runningPnl
+        val dd = peak - runningPnl
+        if (dd > maxDD) maxDD = dd
+
+        if (t.pnl > 0) {
+            wins++
+            gProfit += t.pnl
+        } else if (t.pnl < 0) {
+            losses++
+            gLoss += kotlin.math.abs(t.pnl)
+        }
+
         val signEmoji = if (t.pnl >= 0) "🟢" else "🔴"
-        println("| ${t.tradeNo} | ${t.direction} | ${t.entryTime} | ${t.exitTime} | ${t.derivativeSymbol} | ${String.format("%.2f", t.entryOptionPrice)} | ${String.format("%.2f", t.exitOptionPrice)} | $signEmoji ${String.format("%.2f", t.pnl)} |")
+        val cumSignEmoji = if (runningPnl >= 0) "🟢" else "🔴"
+        println("| ${t.tradeNo} | ${t.direction} | ${t.entryTime} | ${t.exitTime} | ${t.derivativeSymbol} | ${String.format("%.2f", t.entryOptionPrice)} | ${String.format("%.2f", t.exitOptionPrice)} | $signEmoji ${String.format("%.2f", t.pnl)} | $cumSignEmoji ${String.format("%.2f", runningPnl)} |")
     }
-    println("==========================================================================================")
-    println("Total Trades Executed: ${completedTrades.size} | Net Derivative Option P&L: ${String.format("%.2f", totalOptionPnl)} points")
-    println("==========================================================================================\n")
+
+    val winRate = if (completedTrades.isNotEmpty()) (wins.toDouble() / completedTrades.size) * 100 else 0.0
+    val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
+
+    println("==========================================================================================================")
+    println("PERFORMANCE & MAX DRAWDOWN STATISTICS:")
+    println("• Total Trades Executed : ${completedTrades.size}")
+    println("• Winning Trades        : $wins W | Losing Trades: $losses L (Win Rate: ${String.format("%.1f", winRate)}%)")
+    println("• Gross Profit          : ${String.format("%.2f", gProfit)} pts | Gross Loss: ${String.format("%.2f", gLoss)} pts")
+    println("• Profit Factor         : ${String.format("%.2f", profitFactor)}")
+    println("• Net Derivative P&L    : ${String.format("%.2f", runningPnl)} points")
+    println("• Peak P&L (High Water) : ${String.format("%.2f", peak)} points")
+    println("• Max Drawdown          : 📉 ${String.format("%.2f", maxDD)} points")
+    println("==========================================================================================================\n")
 }
