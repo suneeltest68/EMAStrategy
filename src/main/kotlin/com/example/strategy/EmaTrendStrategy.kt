@@ -10,7 +10,8 @@ data class Candle(
     val high: Double,
     val low: Double,
     val close: Double,
-    val volume: Double = 0.0
+    val volume: Double = 0.0,
+    val epoch: Long = 0L
 )
 
 data class IndicatorCandle(

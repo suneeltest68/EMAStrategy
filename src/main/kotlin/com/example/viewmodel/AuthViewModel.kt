@@ -61,7 +61,7 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
                     
                     val chunkFrom = currentStart.toString()
                     val chunkTo = currentEnd.toString()
-                    println("Fetching Fyers history chunk: $chunkFrom to $chunkTo")
+//                    println("Fetching Fyers history chunk: $chunkFrom to $chunkTo")
 
                     val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, chunkFrom, chunkTo)
                     if (result.isSuccess) {

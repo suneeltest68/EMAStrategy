@@ -165,7 +165,7 @@ fun parseFyersCandles(json: JSONObject): List<Candle> {
             val zdt = Instant.ofEpochSecond(epoch).atZone(ZoneId.of("Asia/Kolkata"))
             val timeStr = zdt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
 
-            candles.add(Candle(timestamp = timeStr, open = open, high = high, low = low, close = close, volume = volume))
+            candles.add(Candle(timestamp = timeStr, open = open, high = high, low = low, close = close, volume = volume, epoch = epoch))
         }
     } catch (e: Exception) {
         throw RuntimeException("Error parsing Fyers candles: ${e.message}")
