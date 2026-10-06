@@ -8,7 +8,7 @@ kotlin {
 }
 
 application {
-    mainClass.set("com.example.RailwayDaemonMainKt")
+    mainClass.set("com.example.MainKt")
     applicationName = "cww"
 }
 

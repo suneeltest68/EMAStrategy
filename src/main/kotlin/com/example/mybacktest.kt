@@ -105,8 +105,10 @@ fun main() {
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
 //    val rangeStart = "2026-10-05"
-    val rangeStart = "2026-09-30"
-    val rangeEnd = "2026-10-05"
+//    val rangeStart = "2026-09-30"
+//    val rangeEnd = "2026-10-05"
+    val rangeStart = java.time.LocalDate.now().toString()
+    val rangeEnd = java.time.LocalDate.now().toString()
     val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
 
     println("\n[3] Fetching Nifty 50 Historical Data from Fyers API ($rangeFrom to $rangeEnd)...")
@@ -118,6 +120,15 @@ suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: S
         rangeFrom = rangeFrom,
         rangeTo = rangeEnd
     )
+
+    /*val jsonString = ""
+    val history = try {
+        JSONObject(jsonString)
+    } catch (e: org.json.JSONException) {
+        // Handle parsing error
+        println("Invalid JSON: ${e.message}")
+        null
+    }*/
 
     if (history != null) {
         println("Successfully fetched historical data from Fyers API. Parsing candles...")
