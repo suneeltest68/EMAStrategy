@@ -303,8 +303,7 @@ suspend fun runDerivativeBacktestForRange(
                     expiryIndex = 1
                 )
 
-                println("🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime")
-
+                println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m")
                 derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
 
                 val entryDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime }
