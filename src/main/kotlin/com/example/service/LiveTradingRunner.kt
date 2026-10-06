@@ -171,6 +171,10 @@ class LiveTradingRunner(
                         val slice = indicatorCandles
                         val decision = engine.evaluate(slice, activePosition)
 
+                        val msg = "🔔 [ Current Signal ${decision.action} | Derivative: $derivativeSymbol"
+                        println(msg)
+                        TelegramNotifier.sendAlert(msg)
+
                         if (activePosition == null) {
                             if (decision.action == "ENTER_LONG" || decision.action == "ENTER_SHORT") {
                                 tradeCount++
