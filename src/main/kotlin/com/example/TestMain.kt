@@ -21,16 +21,13 @@ import com.example.service.TelegramNotifier
 import com.example.util.AuthUtils
 import com.sun.net.httpserver.HttpServer
 import io.github.cdimascio.dotenv.dotenv
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.net.InetSocketAddress
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.Duration
-import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.Scanner
 
@@ -65,71 +62,6 @@ fun main() = runBlocking {
         return@runBlocking
     }
 
-    var authCodeDeferred: CompletableDeferred<String>? = null
-
-    // Start 24/7 Background HTTP Server for OAuth Callback & Journal Dashboard API
-    val server = HttpServer.create(InetSocketAddress(port), 0)
-    server.createContext("/") { exchange ->
-        val path = exchange.requestURI.path?.removeSuffix("/") ?: ""
-        try {
-            if (path == "/api/journal" || path == "/journal") {
-                val file = File("trading_journal.json")
-                val jsonStr = if (file.exists()) file.readText() else "{\"trades\":[],\"stats\":{}}"
-                exchange.responseHeaders.set("Content-Type", "application/json; charset=UTF-8")
-                exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
-                val bytes = jsonStr.toByteArray(StandardCharsets.UTF_8)
-                exchange.sendResponseHeaders(200, bytes.size.toLong())
-                exchange.responseBody.use { it.write(bytes) }
-            } else if (path == "/api/active-trades") {
-                val file = File("active_trades.json")
-                val jsonStr = if (file.exists()) file.readText() else "{}"
-                exchange.responseHeaders.set("Content-Type", "application/json; charset=UTF-8")
-                exchange.responseHeaders.set("Access-Control-Allow-Origin", "*")
-                val bytes = jsonStr.toByteArray(StandardCharsets.UTF_8)
-                exchange.sendResponseHeaders(200, bytes.size.toLong())
-                exchange.responseBody.use { it.write(bytes) }
-            } else if (path == "/callback") {
-                val query = exchange.requestURI.query ?: ""
-                val queryParams = query.split("&").associate {
-                    val parts = it.split("=", limit = 2)
-                    if (parts.size == 2) {
-                        URLDecoder.decode(parts[0], StandardCharsets.UTF_8.name()) to 
-                        URLDecoder.decode(parts[1], StandardCharsets.UTF_8.name())
-                    } else {
-                        "" to ""
-                    }
-                }
-                val code = queryParams["s_code"] ?: queryParams["auth_code"] ?: queryParams["code"]
-                val responseHtml = if (!code.isNullOrEmpty()) {
-                    "<html><body style='font-family: Arial; text-align: center; margin-top: 50px;'><h1 style='color: green;'>✅ Fyers Authentication Successful!</h1><p>Authorization code received. You can now close this tab.</p></body></html>"
-                } else {
-                    "<html><body style='font-family: Arial; text-align: center; margin-top: 50px;'><h1 style='color: red;'>❌ Authentication Failed</h1><p>No authorization code found in callback query.</p></body></html>"
-                }
-                exchange.responseHeaders.set("Content-Type", "text/html; charset=UTF-8")
-                val bytes = responseHtml.toByteArray(StandardCharsets.UTF_8)
-                exchange.sendResponseHeaders(200, bytes.size.toLong())
-                exchange.responseBody.use { it.write(bytes) }
-
-                if (!code.isNullOrEmpty()) {
-                    authCodeDeferred?.complete(code)
-                }
-            } else {
-                val htmlStr = "<h1>NIFTY EMA Strategy Daemon</h1><p>Status: Running 24/7</p><p><a href='/api/journal'>View Trading Journal</a></p>"
-                exchange.responseHeaders.set("Content-Type", "text/html; charset=UTF-8")
-                val bytes = htmlStr.toByteArray(StandardCharsets.UTF_8)
-                exchange.sendResponseHeaders(200, bytes.size.toLong())
-                exchange.responseBody.use { it.write(bytes) }
-            }
-        } catch (e: Exception) {
-            val err = "Error: ${e.message}".toByteArray(StandardCharsets.UTF_8)
-            exchange.sendResponseHeaders(500, err.size.toLong())
-            exchange.responseBody.use { it.write(err) }
-        }
-    }
-    server.setExecutor(null)
-    server.start()
-    println("[HTTP Server] Running 24/7 on port $port (API: /api/journal, OAuth: /callback)")
-
     var isFirstRun = true
 
     while (true) {
@@ -156,49 +88,30 @@ fun main() = runBlocking {
             viewModel.prepareLoginUrl(appId, redirectUri)
             val loginUrl = viewModel.authState.value.loginUrl
             println("\n[Auth] Access token required for new trading day.")
-            println("[Auth] Open this URL in your browser to authorize:\n$loginUrl")
+            println("[Auth] Open this URL in your browser to authorize:")
+            println(loginUrl)
             TelegramNotifier.sendAlert("⚠️ [Fyers Daemon] New trading day started. Please login & authorize:\n$loginUrl")
 
-            print("\n[Local Run Option] Paste either the full redirect URL or the 'auth_code' (or press Enter to wait for web callback): ")
             val scanner = Scanner(System.`in`)
-            val input = try {
-                if (System.console() != null || System.`in`.available() > 0) scanner.nextLine().trim() else ""
-            } catch (_: Exception) {
-                ""
+            print("\nPaste either the full redirect URL or the 'auth_code': ")
+            var input = scanner.nextLine().trim()
+            while (input.isEmpty()) {
+                print("Input cannot be empty. Please paste the redirect URL or auth_code: ")
+                input = scanner.nextLine().trim()
             }
 
-            val authCode = if (input.isNotEmpty()) {
-                AuthUtils.extractAuthCode(input)
-            } else {
-                println("[Auth] Waiting for web callback on port $port...")
-                authCodeDeferred = CompletableDeferred()
-                val localDeferred = authCodeDeferred
-                val code = try {
-                    withTimeout(60 * 60 * 1000L) {
-                        localDeferred.await()
-                    }
-                } catch (_: Exception) {
-                    null
-                } finally {
-                    authCodeDeferred = null
-                }
-                code
-            }
+            val authCode = AuthUtils.extractAuthCode(input)
 
-            if (!authCode.isNullOrEmpty()) {
-                println("[Auth] Exchanging received auth code for access token...")
-                viewModel.authenticateWithAuthCode(appId, secretKey, authCode)
-                val finalState = viewModel.authState.value
-                if (finalState.accessToken != null) {
-                    activeToken = finalState.accessToken
-                    TelegramNotifier.sendAlert("✅ [Fyers Daemon] Access Token acquired & cached successfully!")
-                } else {
-                    TelegramNotifier.sendAlert("❌ [Fyers Daemon] Token exchange failed: ${finalState.errorMessage}")
-                }
+            println("[Auth] Exchanging received auth code for access token...")
+            viewModel.authenticateWithAuthCode(appId, secretKey, authCode)
+            val finalState = viewModel.authState.value
+            if (finalState.accessToken != null) {
+                activeToken = finalState.accessToken
+                println("\nSUCCESS! Access Token acquired and cached.")
+                TelegramNotifier.sendAlert("✅ [Fyers Daemon] Access Token acquired & cached successfully!")
             } else {
-                TelegramNotifier.sendAlert("❌ [Fyers Daemon] Authentication timed out or cancelled.")
-                delay(10 * 60 * 1000L)
-                continue
+                println("\n❌ FAILED: ${finalState.errorMessage}")
+                TelegramNotifier.sendAlert("❌ [Fyers Daemon] Token exchange failed: ${finalState.errorMessage}")
             }
         }
 
