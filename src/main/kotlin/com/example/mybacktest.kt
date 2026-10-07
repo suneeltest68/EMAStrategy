@@ -25,6 +25,7 @@ import com.example.strategy.EmaTrendSignalEngine
 import com.example.strategy.EmaTrendPositionContext
 import com.example.strategy.EmaTrendConfig
 import io.github.cdimascio.dotenv.dotenv
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.time.Instant
@@ -106,7 +107,7 @@ fun main() {
  * Fetches NIFTY index data, runs strategy signals from September 30th to October 5th, 2026, and resolves weekly options.
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
-//    val rangeStart = "2026-10-05"
+//    val rangeStart = "2026-09-30"
     val rangeStart = "2026-09-17"
 //    val rangeEnd = "2026-10-06"
 //    val rangeStart = java.time.LocalDate.now().toString()
@@ -315,7 +316,6 @@ suspend fun runDerivativeBacktestForRange(
                 )
 
                 println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m")
-
 //                if (entryTime != "2026-10-06 09:30")
 //                    TelegramNotifier.sendAlert("🚀 We got a trade signal at $entryTime")
 
@@ -326,7 +326,7 @@ suspend fun runDerivativeBacktestForRange(
                     ?: throw IllegalStateException("No 1-min derivative candle found at or after entry time $entryTime for $derivativeSymbol")
                 entryOptionPrice = entryDerivativeBar.open
 
-                activePosition = EmaTrendPositionContext(
+                activePosition = decision.updatedPosition ?: EmaTrendPositionContext(
                     direction = if (isLong) "LONG" else "SHORT",
                     entryUnderlying = entrySpot,
                     stopUnderlying = ic.ema11
@@ -364,6 +364,8 @@ suspend fun runDerivativeBacktestForRange(
 
                 activePosition = null
                 derivativeCandles = emptyList()
+            } else {
+                activePosition = decision.updatedPosition ?: activePosition
             }
         }
     }

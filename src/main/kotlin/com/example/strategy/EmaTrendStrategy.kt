@@ -54,7 +54,9 @@ data class EmaTrendConfig(
     val distanceAtrMultiplier: Double = 0.5,
     val ema11SlopeAtrMultiplier: Double = 0.3,
     val ema18SlopeAtrMultiplier: Double = 0.2,
-    val fullBodyMinRatio: Double = 0.5
+    val fullBodyMinRatio: Double = 0.5,
+    val useAtrTrailingStop: Boolean = true,
+    val atrStopMultiplier: Double = 2.0
 ) {
     init {
         require(emaFastPeriod < emaMidPeriod && emaMidPeriod < emaSlowPeriod) {
@@ -69,7 +71,9 @@ data class EmaTrendConfig(
 data class EmaTrendPositionContext(
     val direction: String, // "LONG" or "SHORT"
     val entryUnderlying: Double,
-    val stopUnderlying: Double = 0.0
+    val stopUnderlying: Double = 0.0,
+    val extremePrice: Double = 0.0,
+    val trailingStop: Double = 0.0
 )
 
 data class EmaTrendDecision(
@@ -77,7 +81,8 @@ data class EmaTrendDecision(
     val entryUnderlying: Double = 0.0,
     val stopUnderlying: Double = 0.0,
     val exitReason: String = "",
-    val signalTriggered: Boolean = false
+    val signalTriggered: Boolean = false,
+    val updatedPosition: EmaTrendPositionContext? = null
 )
 
 data class TradeRecord(
@@ -111,31 +116,70 @@ class EmaTrendSignalEngine(private val config: EmaTrendConfig = EmaTrendConfig()
         // 1. If position is open, check exit conditions first
         if (position != null) {
             val direction = position.direction.trim().uppercase()
-            if (direction == "LONG" && current.low < current.ema11) {
-                return EmaTrendDecision(action = "EXIT", exitReason = "EMA11_EXIT")
+            if (config.useAtrTrailingStop) {
+                if (direction == "LONG") {
+                    val newExtreme = max(position.extremePrice, current.high)
+                    val potentialStop = newExtreme - (config.atrStopMultiplier * current.atr)
+                    val newStop = max(position.trailingStop, potentialStop)
+                    if (current.low < newStop) {
+                        return EmaTrendDecision(action = "EXIT", exitReason = "ATR_TRAILING_STOP")
+                    }
+                    return EmaTrendDecision(action = "HOLD", updatedPosition = position.copy(extremePrice = newExtreme, trailingStop = newStop))
+                } else if (direction == "SHORT") {
+                    val newExtreme = min(if (position.extremePrice == 0.0) current.low else position.extremePrice, current.low)
+                    val potentialStop = newExtreme + (config.atrStopMultiplier * current.atr)
+                    val newStop = if (position.trailingStop == 0.0) potentialStop else min(position.trailingStop, potentialStop)
+                    if (current.high > newStop) {
+                        return EmaTrendDecision(action = "EXIT", exitReason = "ATR_TRAILING_STOP")
+                    }
+                    return EmaTrendDecision(action = "HOLD", updatedPosition = position.copy(extremePrice = newExtreme, trailingStop = newStop))
+                }
+            } else {
+                if (direction == "LONG" && current.low < current.ema11) {
+                    return EmaTrendDecision(action = "EXIT", exitReason = "EMA11_EXIT")
+                }
+                if (direction == "SHORT" && current.high > current.ema11) {
+                    return EmaTrendDecision(action = "EXIT", exitReason = "EMA11_EXIT")
+                }
+                return EmaTrendDecision(action = "HOLD", updatedPosition = position)
             }
-            if (direction == "SHORT" && current.high > current.ema11) {
-                return EmaTrendDecision(action = "EXIT", exitReason = "EMA11_EXIT")
-            }
-            return EmaTrendDecision(action = "HOLD")
+            return EmaTrendDecision(action = "HOLD", updatedPosition = position)
         }
 
         // 2. If flat, check entry setups
         if (current.longSetup) {
+            val extreme = current.high
+            val tStop = current.close - (config.atrStopMultiplier * current.atr)
             return EmaTrendDecision(
                 action = "ENTER_LONG",
                 entryUnderlying = current.close,
                 stopUnderlying = current.ema11,
-                signalTriggered = true
+                signalTriggered = true,
+                updatedPosition = EmaTrendPositionContext(
+                    direction = "LONG",
+                    entryUnderlying = current.close,
+                    stopUnderlying = current.ema11,
+                    extremePrice = extreme,
+                    trailingStop = tStop
+                )
             )
         }
 
         if (current.shortSetup) {
+            val extreme = current.low
+            val tStop = current.close + (config.atrStopMultiplier * current.atr)
             return EmaTrendDecision(
                 action = "ENTER_SHORT",
                 entryUnderlying = current.close,
                 stopUnderlying = current.ema11,
-                signalTriggered = true
+                signalTriggered = true,
+                updatedPosition = EmaTrendPositionContext(
+                    direction = "SHORT",
+                    entryUnderlying = current.close,
+                    stopUnderlying = current.ema11,
+                    extremePrice = extreme,
+                    trailingStop = tStop
+                )
             )
         }
 

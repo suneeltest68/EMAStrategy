@@ -1,8 +1,12 @@
 package com.example.util
 
 import kotlin.math.round
+import org.json.JSONObject
+import kotlinx.coroutines.delay
 
 object OptionUtils {
+
+    private val optionChainCache = mutableMapOf<String, JSONObject>()
 
     /**
      * Identifies the At-The-Money (ATM) strike price given the current underlying spot price and strike interval.
@@ -42,8 +46,20 @@ object OptionUtils {
         val strikeInterval = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true)) 100 else 50
         val atmStrike = calculateAtmStrike(spotPrice, strikeInterval)
 
-        val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
-            ?: throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol")
+        val cacheKey = indexSymbol
+        var optionChain = optionChainCache[cacheKey]
+        if (optionChain == null) {
+            var attempts = 0
+            while (attempts < 3 && optionChain == null) {
+                delay(500L * (attempts + 1))
+                optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
+                attempts++
+            }
+            if (optionChain == null) {
+                throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol after retries (Rate limit 429)")
+            }
+            optionChainCache[cacheKey] = optionChain
+        }
 
         var expiryDateStr: String? = null
         if (optionChain.has("data")) {
