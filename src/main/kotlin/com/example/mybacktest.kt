@@ -107,11 +107,11 @@ fun main() {
  * Fetches NIFTY index data, runs strategy signals from September 30th to October 5th, 2026, and resolves weekly options.
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
-//    val rangeStart = "2026-09-30"
     val rangeStart = "2026-09-17"
 //    val rangeEnd = "2026-10-06"
 //    val rangeStart = java.time.LocalDate.now().toString()
     val rangeEnd = java.time.LocalDate.now().toString()
+//    val rangeEnd = "2026-05-30"
     val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
 
     println("\n[3] Fetching Nifty 50 Historical Data from Fyers API ($rangeFrom to $rangeEnd)...")
@@ -185,9 +185,14 @@ suspend fun fetchDerivativeCandles(
     from: String,
     to: String
 ): List<Candle> {
-    val history = viewModel.fetchHistoricalDataInChunks(appId, token, symbol, "1", from, to)
-        ?: viewModel.fetchHistoricalData(appId, token, symbol, "1", from, to)
-        ?: throw IllegalStateException("Failed to fetch 1-min historical data for derivative symbol $symbol from $from to $to")
+    val isHistorical = java.time.LocalDate.parse(from).isBefore(java.time.LocalDate.now().minusDays(7))
+    val history = if (isHistorical) {
+        viewModel.fetchHistoryFNOExpired(appId, token, symbol, from, to, "1")
+            ?: viewModel.fetchHistoricalDataInChunks(appId, token, symbol, "1", from, to)
+    } else {
+        viewModel.fetchHistoricalDataInChunks(appId, token, symbol, "1", from, to)
+            ?: viewModel.fetchHistoricalData(appId, token, symbol, "1", from, to)
+    } ?: throw IllegalStateException("Failed to fetch 1-min historical data for derivative symbol $symbol from $from to $to")
     val candles = parseFyersCandles(history)
     if (candles.isEmpty()) {
         throw IllegalStateException("No 1-min candles returned for derivative symbol $symbol from $from to $to")
@@ -305,22 +310,35 @@ suspend fun runDerivativeBacktestForRange(
                     .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                 entryDate = entryTime.substring(0, 10)
                 val optionType = if (isLong) "CE" else "PE"
-                // Resolve weekly option symbol strictly via live Fyers option chain lookup (expiryIndex = 1 for next week)
-                derivativeSymbol = OptionUtils.resolveWeeklyOptionSymbol(
-                    viewModel = viewModel,
-                    appId = appId,
-                    token = token,
-                    indexSymbol = "NSE:NIFTY50-INDEX",
-                    spotPrice = entrySpot,
-                    optionType = optionType,
-                    expiryIndex = 1
-                )
+                val isHistorical = java.time.LocalDate.parse(candleDate).isBefore(java.time.LocalDate.now().minusDays(7))
 
-                println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m")
-//                if (entryTime != "2026-10-06 09:30")
-//                    TelegramNotifier.sendAlert("🚀 We got a trade signal at $entryTime")
+                if (isHistorical) {
+                    derivativeCandles = OptionUtils.resolveAndFetchExpiredDerivativeCandles(
+                        viewModel = viewModel,
+                        appId = appId,
+                        token = token,
+                        indexSymbol = "NSE:NIFTY50-INDEX",
+                        spotPrice = entrySpot,
+                        optionType = optionType,
+                        tradeDate = candleDate
+                    )
+                    derivativeSymbol = "EXPIRED_${candleDate}_${entrySpot.toInt()}_$optionType"
+                    println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m")
+                } else {
+                    derivativeSymbol = OptionUtils.resolveWeeklyOptionSymbol(
+                        viewModel = viewModel,
+                        appId = appId,
+                        token = token,
+                        indexSymbol = "NSE:NIFTY50-INDEX",
+                        spotPrice = entrySpot,
+                        optionType = optionType,
+                        expiryIndex = 1
+                    )
+                    println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m")
+                    println("   📅 [EXPIRY CONTRACT] Resolved Derivative Symbol: $derivativeSymbol (Trade Date: $candleDate)")
 
-                derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
+                    derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
+                }
 
                 // Here if entry comes at 9:30 candle close , we are fetching data at 9:35:02 second , so order gets executed at 9:35:02 so we are considering open price od 9:35
                 val entryDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime }
@@ -346,7 +364,20 @@ suspend fun runDerivativeBacktestForRange(
 
                 val exitTime = if (isSquareOff && timePart > "15:25") "$candleDate 15:25" else validExitTime
                 val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime } ?: run {
-                    derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, entryDate, candleDate)
+                    val isHist = java.time.LocalDate.parse(candleDate).isBefore(java.time.LocalDate.now().minusDays(7))
+                    if (isHist) {
+                        derivativeCandles = OptionUtils.resolveAndFetchExpiredDerivativeCandles(
+                            viewModel = viewModel,
+                            appId = appId,
+                            token = token,
+                            indexSymbol = "NSE:NIFTY50-INDEX",
+                            spotPrice = activePosition.entryUnderlying,
+                            optionType = if (activePosition.direction == "LONG") "CE" else "PE",
+                            tradeDate = candleDate
+                        )
+                    } else {
+                        derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, entryDate, candleDate)
+                    }
                     derivativeCandles.firstOrNull { it.timestamp >= exitTime }
                         ?: derivativeCandles.lastOrNull()
                         ?: throw IllegalStateException("No 1-min derivative candle found at or after exit time $exitTime for $derivativeSymbol")
