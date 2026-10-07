@@ -243,7 +243,8 @@ suspend fun runDerivativeBacktestForRange(
     val config = EmaTrendConfig(
         emaFastPeriod = 20,
         emaMidPeriod = 55,
-        emaSlowPeriod = 90
+        emaSlowPeriod = 90,
+        adxThreshold = 30.0
     )
     val indicatorCandles = TechnicalIndicators.buildIndicators(candles, config)
     val engine = EmaTrendSignalEngine(config)

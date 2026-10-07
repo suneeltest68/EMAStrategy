@@ -50,7 +50,7 @@ data class EmaTrendConfig(
     val atrPeriod: Int = 14,
     val adxPeriod: Int = 14,
     val slopeLookback: Int = 3,
-    val adxThreshold: Double = 20.0,
+    val adxThreshold: Double = 30.0,
     val distanceAtrMultiplier: Double = 0.5,
     val ema11SlopeAtrMultiplier: Double = 0.3,
     val ema18SlopeAtrMultiplier: Double = 0.2,
