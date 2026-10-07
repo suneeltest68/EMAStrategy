@@ -107,10 +107,10 @@ fun main() {
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
 //    val rangeStart = "2026-10-05"
-    val rangeStart = "2026-09-30"
-    val rangeEnd = "2026-10-06"
+    val rangeStart = "2026-09-17"
+//    val rangeEnd = "2026-10-06"
 //    val rangeStart = java.time.LocalDate.now().toString()
-//    val rangeEnd = java.time.LocalDate.now().toString()
+    val rangeEnd = java.time.LocalDate.now().toString()
     val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
 
     println("\n[3] Fetching Nifty 50 Historical Data from Fyers API ($rangeFrom to $rangeEnd)...")
@@ -118,7 +118,7 @@ suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: S
         appId = appId,
         accessToken = token,
         symbol = "NSE:NIFTY50-INDEX",
-        resolution = "5",
+        resolution = "1",
         rangeFrom = rangeFrom,
         rangeTo = rangeEnd
     )
@@ -239,7 +239,11 @@ suspend fun runDerivativeBacktestForRange(
     println("Parent: NIFTY 50 Index | Derivative: ATM Option 1-Min Data")
     println("==============================================================\n")
 
-    val config = EmaTrendConfig()
+    val config = EmaTrendConfig(
+        emaFastPeriod = 20,
+        emaMidPeriod = 55,
+        emaSlowPeriod = 90
+    )
     val indicatorCandles = TechnicalIndicators.buildIndicators(candles, config)
     val engine = EmaTrendSignalEngine(config)
 
@@ -295,11 +299,10 @@ suspend fun runDerivativeBacktestForRange(
                 entryDate = candleDate*/
 
                 entryTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                    .plusMinutes(5)
+                    .plusMinutes(1)
                     .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                 entryDate = entryTime.substring(0, 10)
                 val optionType = if (isLong) "CE" else "PE"
-
                 // Resolve weekly option symbol strictly via live Fyers option chain lookup (expiryIndex = 1 for next week)
                 derivativeSymbol = OptionUtils.resolveWeeklyOptionSymbol(
                     viewModel = viewModel,
@@ -337,7 +340,7 @@ suspend fun runDerivativeBacktestForRange(
                 // Here if exit comes at 10:30 candle close , we are fetching data at 10:35:02 second , so order gets executed at 10:35:02 so we are considering open price of 10:35
 
                 val validExitTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                    .plusMinutes(5)
+                    .plusMinutes(1)
                     .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
 
                 val exitTime = if (isSquareOff && timePart > "15:25") "$candleDate 15:25" else validExitTime
