@@ -79,7 +79,11 @@ class LiveTradingRunner(
     private val expiryIndex: Int = 1 // 1 for next week expiry
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val config = EmaTrendConfig()
+    private val config = EmaTrendConfig(
+        emaFastPeriod = 20,
+        emaMidPeriod = 55,
+        emaSlowPeriod = 90
+    )
     private val engine = EmaTrendSignalEngine(config)
 
     fun startLiveSession() {
@@ -95,7 +99,7 @@ class LiveTradingRunner(
             val warmupFrom = java.time.LocalDate.now().minusWeeks(1).toString()
 
             println("Fetching warmup historical data from $warmupFrom to $today...")
-            val history = viewModel.fetchHistoricalDataInChunks(appId, token, "NSE:NIFTY50-INDEX", "5", warmupFrom, today)
+            val history = viewModel.fetchHistoricalDataInChunks(appId, token, "NSE:NIFTY50-INDEX", "1", warmupFrom, today)
             val candles = if (history != null) parseFyersCandles(history) else emptyList()
 
             if (candles.isEmpty()) {
@@ -144,7 +148,7 @@ class LiveTradingRunner(
                     continue
                 }
 
-                val latestHistory = viewModel.fetchHistoricalData(appId, token, "NSE:NIFTY50-INDEX", "5", warmupFrom, currentDate)
+                val latestHistory = viewModel.fetchHistoricalData(appId, token, "NSE:NIFTY50-INDEX", "1", warmupFrom, currentDate)
                 if (latestHistory != null) {
                     val freshCandles = parseFyersCandles(latestHistory)
                     if (freshCandles.isNotEmpty()) {
@@ -192,7 +196,7 @@ class LiveTradingRunner(
                                 println(msg)
                                 TelegramNotifier.sendAlert(msg)
 
-                                val dHistory = viewModel.fetchHistoricalData(appId, token, derivativeSymbol, "1", entryDate, entryDate)
+                                val dHistory = viewModel.fetchHistoricalData(appId, token, derivativeSymbol, "5S", entryDate, entryDate)
                                 if (dHistory != null) {
                                     derivativeCandles = parseFyersCandles(dHistory)
                                     val entryBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime } ?: derivativeCandles.firstOrNull()
