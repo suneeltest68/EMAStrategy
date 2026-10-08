@@ -121,8 +121,8 @@ class LiveTradingRunner(
             val istZone = ZoneId.of("Asia/Kolkata")
 
             while (isActive) {
-                // Synchronize precisely with 5-minute candle closes (e.g. 09:20:02, 09:25:02...)
-                waitForNext5MinBoundary()
+                // Synchronize precisely with 1-minute candle closes (e.g. 09:15:01, 09:16:01...)
+                waitForNext1MinBoundary()
 
                 val now = LocalDateTime.now(istZone)
                 val currentTime = now.toLocalTime()
@@ -235,18 +235,20 @@ class LiveTradingRunner(
         }
     }
 
-    private suspend fun waitForNext5MinBoundary() {
+    private suspend fun waitForNext1MinBoundary() {
         val istZone = ZoneId.of("Asia/Kolkata")
         val now = LocalDateTime.now(istZone)
-        val minute = now.minute
-        val remainder = minute % 5
-        val minutesToWait = if (remainder == 0 && now.second < 2) 0 else (5 - (remainder % 5))
-        // Target 2 seconds past the next 5-minute mark (e.g., 09:20:02, 09:25:02) to ensure Fyers has closed candle data
-        val target = now.plusMinutes(minutesToWait.toLong()).withSecond(2).withNano(0)
+
+        // Target 1 second past the next 1-minute mark (e.g., 09:15:01, 09:16:01, 09:17:01)
+        val target = if (now.second < 1) {
+            now.withSecond(1).withNano(0)
+        } else {
+            now.plusMinutes(1).withSecond(1).withNano(0)
+        }
 
         var millisToWait = java.time.Duration.between(LocalDateTime.now(istZone), target).toMillis()
         if (millisToWait <= 0) {
-            val nextTarget = target.plusMinutes(5)
+            val nextTarget = target.plusMinutes(1)
             millisToWait = java.time.Duration.between(LocalDateTime.now(istZone), nextTarget).toMillis()
         }
         if (millisToWait > 0) {
