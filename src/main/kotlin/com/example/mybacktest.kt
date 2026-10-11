@@ -107,17 +107,19 @@ fun main() {
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
 //    val rangeStart = "2026-10-05"
-    val rangeStart = "2026-09-17"
-//    val rangeEnd = "2026-10-06"
+    val rangeStart = "2026-10-01"
+    val rangeEnd = "2026-10-09"
 //    val rangeStart = java.time.LocalDate.now().toString()
-    val rangeEnd = java.time.LocalDate.now().toString()
+//    val rangeEnd = java.time.LocalDate.now().toString()
     val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
 
-    println("\n[3] Fetching Nifty 50 Historical Data from Fyers API ($rangeFrom to $rangeEnd)...")
+//    val indexSymbol = "BSE:SENSEX-INDEX" // Change to "NSE:NIFTY50-INDEX" for Nifty or "BSE:SENSEX-INDEX" for Sensex // Set to "NSE:NIFTY50-INDEX" for Nifty or "BSE:SENSEX-INDEX" for Sensex
+    val indexSymbol = "NSE:NIFTY50-INDEX" // Change to "NSE:NIFTY50-INDEX" for Nifty or "BSE:SENSEX-INDEX" for Sensex // Set to "NSE:NIFTY50-INDEX" for Nifty or "BSE:SENSEX-INDEX" for Sensex
+    println("\n[3] Fetching Historical Data for $indexSymbol from Fyers API ($rangeFrom to $rangeEnd)...")
     val history = viewModel.fetchHistoricalDataInChunks(
         appId = appId,
         accessToken = token,
-        symbol = "NSE:NIFTY50-INDEX",
+        symbol = indexSymbol,
         resolution = "1",
         rangeFrom = rangeFrom,
         rangeTo = rangeEnd
@@ -136,8 +138,8 @@ suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: S
         println("Successfully fetched historical data from Fyers API. Parsing candles...")
         val candles = parseFyersCandles(history)
         if (candles.isNotEmpty()) {
-            println("Successfully parsed ${candles.size} historical candles. Running Weekly Expiry Derivative Backtest...")
-            runDerivativeBacktestForRange(viewModel, appId, token, candles, rangeStart, rangeEnd)
+            println("Successfully parsed ${candles.size} historical candles. Running Weekly Expiry Derivative Backtest for $indexSymbol...")
+            runDerivativeBacktestForRange(viewModel, appId, token, candles, rangeStart, rangeEnd, indexSymbol)
         } else {
             throw IllegalStateException("Fetched history JSON from Fyers contained no candles.")
         }
@@ -184,8 +186,8 @@ suspend fun fetchDerivativeCandles(
     from: String,
     to: String
 ): List<Candle> {
-    val history = viewModel.fetchHistoricalDataInChunks(appId, token, symbol, "1", from, to)
-        ?: viewModel.fetchHistoricalData(appId, token, symbol, "1", from, to)
+    val history = viewModel.fetchHistoricalDataInChunks(appId, token, symbol, "5S", from, to)
+        ?: viewModel.fetchHistoricalData(appId, token, symbol, "5S", from, to)
         ?: throw IllegalStateException("Failed to fetch 1-min historical data for derivative symbol $symbol from $from to $to")
     val candles = parseFyersCandles(history)
     if (candles.isEmpty()) {
@@ -232,11 +234,12 @@ suspend fun runDerivativeBacktestForRange(
     token: String,
     candles: List<Candle>,
     startDate: String,
-    endDate: String
+    endDate: String,
+    indexSymbol: String = "NSE:NIFTY50-INDEX"
 ) {
     println("\n==============================================================")
-    println("EXECUTING WEEKLY EXPIRY OPTION BACKTEST (SEPT 30 - OCT 5)")
-    println("Parent: NIFTY 50 Index | Derivative: ATM Option 1-Min Data")
+    println("EXECUTING WEEKLY EXPIRY OPTION BACKTEST ($startDate to $endDate)")
+    println("Parent: $indexSymbol | Derivative: ATM Option Data")
     println("==============================================================\n")
 
     val config = EmaTrendConfig(
@@ -297,34 +300,46 @@ suspend fun runDerivativeBacktestForRange(
 
                 /*entryTime = ic.timestamp
                 entryDate = candleDate*/
+                println(entryTime +" Original")
 
                 entryTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                     .plusMinutes(1)
                     .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                 entryDate = entryTime.substring(0, 10)
+                println(entryTime +" Plus One")
                 val optionType = if (isLong) "CE" else "PE"
-                // Resolve weekly option symbol strictly via live Fyers option chain lookup (expiryIndex = 1 for next week)
-                derivativeSymbol = OptionUtils.resolveWeeklyOptionSymbol(
-                    viewModel = viewModel,
-                    appId = appId,
-                    token = token,
-                    indexSymbol = "NSE:NIFTY50-INDEX",
-                    spotPrice = entrySpot,
-                    optionType = optionType,
-                    expiryIndex = 1
-                )
+                val isHistorical = java.time.LocalDate.parse(candleDate).isBefore(java.time.LocalDate.now().minusDays(7))
 
-                println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m")
-
-//                if (entryTime != "2026-10-06 09:30")
-//                    TelegramNotifier.sendAlert("🚀 We got a trade signal at $entryTime")
-
-                derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
-
+                if (isHistorical) {
+                    val expiredRes = OptionUtils.resolveAndFetchExpiredDerivativeCandles(
+                        viewModel = viewModel,
+                        appId = appId,
+                        token = token,
+                        indexSymbol = indexSymbol,
+                        spotPrice = entrySpot,
+                        optionType = optionType,
+                        tradeDate = candleDate
+                    )
+                    derivativeSymbol = expiredRes.symbol
+                    derivativeCandles = expiredRes.candles
+                } else {
+                    derivativeSymbol = OptionUtils.resolveWeeklyOptionSymbol(
+                        viewModel = viewModel,
+                        appId = appId,
+                        token = token,
+                        indexSymbol = indexSymbol,
+                        spotPrice = entrySpot,
+                        optionType = optionType,
+                        expiryIndex = 0
+                    )
+                    derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
+                }
+//                println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m  first candle time ${derivativeCandles[0].timestamp}")
                 // Here if entry comes at 9:30 candle close , we are fetching data at 9:35:02 second , so order gets executed at 9:35:02 so we are considering open price od 9:35
                 val entryDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime }
                     ?: throw IllegalStateException("No 1-min derivative candle found at or after entry time $entryTime for $derivativeSymbol")
                 entryOptionPrice = entryDerivativeBar.open
+                println(entryDerivativeBar.timestamp +" Derivative Candle")
 
                 activePosition = EmaTrendPositionContext(
                     direction = if (isLong) "LONG" else "SHORT",
@@ -342,7 +357,6 @@ suspend fun runDerivativeBacktestForRange(
                 val validExitTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                     .plusMinutes(1)
                     .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-
                 val exitTime = if (isSquareOff && timePart > "15:25") "$candleDate 15:25" else validExitTime
                 val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime } ?: run {
                     derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, entryDate, candleDate)
@@ -358,7 +372,7 @@ suspend fun runDerivativeBacktestForRange(
                     exitTime = exitDerivativeBar.timestamp,
                     derivativeSymbol = derivativeSymbol,
                     entryOptionPrice = entryOptionPrice,
-                    exitOptionPrice = exitDerivativeBar.close,
+                    exitOptionPrice = exitDerivativeBar.open,
                     completedTrades = completedTrades
                 )
 

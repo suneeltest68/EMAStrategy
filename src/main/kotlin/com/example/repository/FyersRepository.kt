@@ -10,6 +10,40 @@ import java.io.File
 class FyersRepository {
 
     private val tokenFile = File("token.json")
+    private val cacheDir = File("cache").apply { if (!exists()) mkdirs() }
+    private val indexCacheFile = File(cacheDir, "index_cache.json")
+    private val derivativesCacheFile = File(cacheDir, "derivatives_cache.json")
+
+    @Synchronized
+    private fun loadCacheObject(file: File): JSONObject {
+        if (file.exists() && file.length() > 0) {
+            try {
+                val content = file.readText()
+                if (content.isNotEmpty()) {
+                    return JSONObject(content)
+                }
+            } catch (_: Exception) {}
+        }
+        return JSONObject()
+    }
+
+    @Synchronized
+    private fun readFromConsolidatedCache(file: File, cacheKey: String): JSONObject? {
+        val root = loadCacheObject(file)
+        if (root.has(cacheKey)) {
+            return root.optJSONObject(cacheKey)
+        }
+        return null
+    }
+
+    @Synchronized
+    private fun saveToConsolidatedCache(file: File, cacheKey: String, data: JSONObject) {
+        try {
+            val root = loadCacheObject(file)
+            root.put(cacheKey, data)
+            file.writeText(root.toString())
+        } catch (_: Exception) {}
+    }
 
     fun clearToken() {
         if (tokenFile.exists()) {
@@ -33,10 +67,7 @@ class FyersRepository {
             val fyersClass = FyersClass.getInstance()
             fyersClass.clientId = appId
 
-            // Fyers v3 requires app_id_hash (SHA-256 of appId:secretKey)
             val appHashId = sha256("$appId:$secretKey")
-
-            // Using SDK GenerateToken method with appHashId
             val rawResponse = fyersClass.GenerateToken(authCode, appHashId)
             val jsonResponse = when (rawResponse) {
                 is JSONObject -> rawResponse
@@ -62,6 +93,15 @@ class FyersRepository {
     }
 
     fun getHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String): Result<JSONObject> {
+        val isIndex = symbol.contains("INDEX", ignoreCase = true) || symbol.contains("NIFTY50", ignoreCase = true) || symbol.contains("BANKNIFTY", ignoreCase = true) || symbol.contains("SENSEX", ignoreCase = true)
+        val targetFile = if (isIndex) indexCacheFile else derivativesCacheFile
+        val cacheKey = "history_${symbol}_${resolution}_${rangeFrom}_${rangeTo}"
+
+        val cached = readFromConsolidatedCache(targetFile, cacheKey)
+        if (cached != null) {
+            return Result.success(cached)
+        }
+
         return try {
             val fyersClass = FyersClass.getInstance()
             fyersClass.clientId = appId
@@ -70,7 +110,7 @@ class FyersRepository {
             val model = StockHistoryModel().apply {
                 Symbol = symbol
                 Resolution = resolution
-                DateFormat = "1" // 1 for yyyy-mm-dd
+                DateFormat = "1"
                 RangeFrom = rangeFrom
                 RangeTo = rangeTo
                 ContFlag = 1
@@ -81,6 +121,7 @@ class FyersRepository {
             val errorJson = tuple?.Item2()
 
             if (errorJson == null && historyJson != null) {
+                saveToConsolidatedCache(targetFile, cacheKey, historyJson)
                 Result.success(historyJson)
             } else {
                 Result.failure(Exception("Stock History Error: $errorJson"))
@@ -91,6 +132,12 @@ class FyersRepository {
     }
 
     fun getOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int): Result<JSONObject> {
+        val cacheKey = "optionchain_${symbol}_${strikeCount}"
+        val cached = readFromConsolidatedCache(derivativesCacheFile, cacheKey)
+        if (cached != null) {
+            return Result.success(cached)
+        }
+
         return try {
             val fyersClass = FyersClass.getInstance()
             fyersClass.clientId = appId
@@ -101,6 +148,7 @@ class FyersRepository {
             val errorJson = tuple?.Item2()
 
             if (errorJson == null && chainJson != null) {
+                saveToConsolidatedCache(derivativesCacheFile, cacheKey, chainJson)
                 Result.success(chainJson)
             } else {
                 val errorMsg = errorJson?.toString() ?: "Unknown error"
@@ -112,6 +160,12 @@ class FyersRepository {
     }
 
     fun getHistoryExpiryDates(appId: String, accessToken: String, symbol: String, rangeFrom: String, rangeTo: String): Result<JSONObject> {
+        val cacheKey = "expirydates_${symbol}_${rangeFrom}_${rangeTo}"
+        val cached = readFromConsolidatedCache(derivativesCacheFile, cacheKey)
+        if (cached != null) {
+            return Result.success(cached)
+        }
+
         return try {
             val fyersClass = FyersClass.getInstance()
             fyersClass.clientId = appId
@@ -122,6 +176,7 @@ class FyersRepository {
             val error = tuple?.Item2()
 
             if (error == null && json != null) {
+                saveToConsolidatedCache(derivativesCacheFile, cacheKey, json)
                 Result.success(json)
             } else {
                 Result.failure(Exception("Expiry Dates Error: $error"))
@@ -132,6 +187,12 @@ class FyersRepository {
     }
 
     fun getHistoryUnderlyingSymbols(appId: String, accessToken: String, symbol: String, expiryDate: String): Result<JSONObject> {
+        val cacheKey = "underlyingsymbols_${symbol}_${expiryDate}"
+        val cached = readFromConsolidatedCache(derivativesCacheFile, cacheKey)
+        if (cached != null) {
+            return Result.success(cached)
+        }
+
         return try {
             val fyersClass = FyersClass.getInstance()
             fyersClass.clientId = appId
@@ -142,6 +203,7 @@ class FyersRepository {
             val error = tuple?.Item2()
 
             if (error == null && json != null) {
+                saveToConsolidatedCache(derivativesCacheFile, cacheKey, json)
                 Result.success(json)
             } else {
                 Result.failure(Exception("Underlying Symbols Error: $error"))
@@ -152,6 +214,12 @@ class FyersRepository {
     }
 
     fun getHistoryFNOExpired(appId: String, accessToken: String, fnoSymbol: String, rangeFrom: String, rangeTo: String, resolution: String): Result<JSONObject> {
+        val cacheKey = "fno_expired_${fnoSymbol}_${rangeFrom}_${rangeTo}_${resolution}"
+        val cached = readFromConsolidatedCache(derivativesCacheFile, cacheKey)
+        if (cached != null) {
+            return Result.success(cached)
+        }
+
         return try {
             val fyersClass = FyersClass.getInstance()
             fyersClass.clientId = appId
@@ -171,6 +239,7 @@ class FyersRepository {
             val error = tuple?.Item2()
 
             if (error == null && json != null) {
+                saveToConsolidatedCache(derivativesCacheFile, cacheKey, json)
                 Result.success(json)
             } else {
                 Result.failure(Exception("FNO Expired History Error: $error"))
