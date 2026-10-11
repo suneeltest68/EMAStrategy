@@ -61,7 +61,8 @@ data class RawTradeCandidate(
 )
 
 data class OptimizationResult(
-    val trailBuffer: Double,
+    val strategyName: String,
+    val parameterValue: Double,
     val winRate: Double,
     val grossProfit: Double,
     val grossLoss: Double,
@@ -136,8 +137,8 @@ fun main() {
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
 //    val rangeStart = "2026-10-05"
-    val rangeStart = "2026-05-01"
-    val rangeEnd = "2026-05-31"
+    val rangeStart = "2026-01-01"
+    val rangeEnd = "2026-09-30"
 //    val rangeStart = java.time.LocalDate.now().toString()
 //    val rangeEnd = java.time.LocalDate.now().toString()
     val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
@@ -266,9 +267,9 @@ suspend fun runDerivativeBacktestForRange(
 
         val timePart = ic.timestamp.substring(11, 16)
 
-        // Intraday rule: Ensure any active position from a previous day is squared off by 15:25 of entryDate
+        // Intraday rule: Ensure any active position from a previous day is squared off by 15:20 of entryDate
         if (activePosition != null && candleDate > entryDate) {
-            val exitTime = "$entryDate 15:25"
+            val exitTime = "$entryDate 15:20"
             val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime }
                 ?: derivativeCandles.lastOrNull()
 
@@ -295,7 +296,7 @@ suspend fun runDerivativeBacktestForRange(
         val decision = engine.evaluate(slice, activePosition)
 
         if (activePosition == null) {
-            if (decision.action == "ENTER_LONG" || decision.action == "ENTER_SHORT") {
+            if ((decision.action == "ENTER_LONG" || decision.action == "ENTER_SHORT") && timePart <= "15:20") {
                 tradeCount++
                 val isLong = decision.action == "ENTER_LONG"
                 val entrySpot = ic.close
@@ -350,8 +351,8 @@ suspend fun runDerivativeBacktestForRange(
                 )
             }
         } else {
-            // Intraday rule: Auto square-off at 15:25 or strategy EXIT
-            val isSquareOff = timePart >= "15:25"
+            // Intraday rule: Auto square-off at 15:20 or strategy EXIT
+            val isSquareOff = timePart >= "15:20"
             if (decision.action == "EXIT" || isSquareOff) {
 
                 // Here if exit comes at 10:30 candle close , we are fetching data at 10:35:02 second , so order gets executed at 10:35:02 so we are considering open price of 10:35
@@ -359,7 +360,7 @@ suspend fun runDerivativeBacktestForRange(
                 val validExitTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                     .plusMinutes(1)
                     .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                val exitTime = if (isSquareOff && timePart > "15:25") "$candleDate 15:25" else validExitTime
+                val exitTime = if (isSquareOff && timePart > "15:20") "$candleDate 15:20" else validExitTime
                 val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime } ?: run {
                     derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, entryDate, candleDate)
                     derivativeCandles.firstOrNull { it.timestamp >= exitTime }
@@ -387,12 +388,13 @@ suspend fun runDerivativeBacktestForRange(
         }
     }
 
-    // Run Optimizer over multiple Trail Buffer combinations (5 to 40 pts)
-    val testBuffers = listOf(5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0)
+    // Run Optimizer over Trailing Peak and Fixed Target Strategies
     val optimizationResults = mutableListOf<OptimizationResult>()
     val lotSize = 65.0
 
-    for (buffer in testBuffers) {
+    // 1. Test Trailing Peak Strategies
+    val trailBuffers = listOf(10.0, 15.0, 20.0, 25.0, 30.0)
+    for (buffer in trailBuffers) {
         val tradesForBuffer = mutableListOf<OptionTradeResult>()
         var runningCumPnl = 0.0
         var peak = 0.0
@@ -460,7 +462,8 @@ suspend fun runDerivativeBacktestForRange(
 
         optimizationResults.add(
             OptimizationResult(
-                trailBuffer = buffer,
+                strategyName = "Trailing Peak",
+                parameterValue = buffer,
                 winRate = winRate,
                 grossProfit = gProfit,
                 grossLoss = gLoss,
@@ -474,25 +477,114 @@ suspend fun runDerivativeBacktestForRange(
         )
     }
 
+    // 2. Test Fixed Target Strategies
+    val fixedTargets = listOf(15.0, 25.0, 35.0, 50.0, 75.0)
+    for (target in fixedTargets) {
+        val tradesForTarget = mutableListOf<OptionTradeResult>()
+        var runningCumPnl = 0.0
+        var peak = 0.0
+        var maxDD = 0.0
+        var wins = 0
+        var losses = 0
+        var gProfit = 0.0
+        var gLoss = 0.0
+
+        for ((idx, raw) in rawTrades.withIndex()) {
+            val targetPrice = raw.entryOptionPrice + target
+            var firstLotExitPrice = raw.entryOptionPrice
+            var hitTarget = false
+            for (c in raw.tradeCandles) {
+                if (c.high >= targetPrice) {
+                    firstLotExitPrice = targetPrice
+                    hitTarget = true
+                    break
+                }
+            }
+            if (!hitTarget) {
+                firstLotExitPrice = raw.exitOptionPrice
+            }
+
+            val firstLotPnl = firstLotExitPrice - raw.entryOptionPrice
+            val secondLotPnl = raw.exitOptionPrice - raw.entryOptionPrice
+            val totalTradePnl = firstLotPnl + secondLotPnl
+            runningCumPnl += totalTradePnl
+
+            if (runningCumPnl > peak) peak = runningCumPnl
+            val dd = peak - runningCumPnl
+            if (dd > maxDD) maxDD = dd
+
+            if (totalTradePnl > 0) {
+                wins++
+                gProfit += totalTradePnl
+            } else if (totalTradePnl < 0) {
+                losses++
+                gLoss += kotlin.math.abs(totalTradePnl)
+            }
+
+            tradesForTarget.add(
+                OptionTradeResult(
+                    tradeNo = idx + 1,
+                    direction = raw.direction,
+                    entryTime = raw.entryTime,
+                    exitTime = raw.exitTime,
+                    derivativeSymbol = raw.derivativeSymbol,
+                    entryOptionPrice = raw.entryOptionPrice,
+                    firstLotExitPrice = firstLotExitPrice,
+                    secondLotExitPrice = raw.exitOptionPrice,
+                    firstLotPnl = firstLotPnl,
+                    secondLotPnl = secondLotPnl,
+                    totalTradePnl = totalTradePnl,
+                    cumulativePnl = runningCumPnl,
+                    cumulativeRupees = runningCumPnl * lotSize
+                )
+            )
+        }
+
+        val winRate = if (tradesForTarget.isNotEmpty()) (wins.toDouble() / tradesForTarget.size) * 100 else 0.0
+        val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
+        val netPnlPts = runningCumPnl
+        val netPnlRupees = netPnlPts * lotSize
+
+        optimizationResults.add(
+            OptimizationResult(
+                strategyName = "Fixed Target",
+                parameterValue = target,
+                winRate = winRate,
+                grossProfit = gProfit,
+                grossLoss = gLoss,
+                profitFactor = profitFactor,
+                netPnlPts = netPnlPts,
+                netPnlRupees = netPnlRupees,
+                maxDrawdownPts = maxDD,
+                maxDrawdownRupees = maxDD * lotSize,
+                completedTrades = tradesForTarget
+            )
+        )
+    }
+
     // Print Optimizer Comparative Summary Table
-    println("\n========================================================================================================================")
-    println("1ST LOT EXIT TRAILING BUFFER OPTIMIZER REPORT (Testing Buffers: 5 to 40 pts | 1 Lot = 65 Qty)")
-    println("========================================================================================================================")
-    println("| Trail Buffer | Win Rate | Gross Profit | Gross Loss | Profit Factor | Net P&L (Pts) | Net P&L (INR) | Max Drawdown |")
-    println("|--------------|----------|--------------|------------|---------------|---------------+---------------+--------------|")
+    println("\n======================================================================================================================================")
+    println("1ST LOT EXIT STRATEGY & PARAMETER OPTIMIZER REPORT (Trailing Peak vs. Fixed Target | 1 Lot = 65 Qty)")
+    println("======================================================================================================================================")
+    println("| Strategy Type   | Parameter Value | Win Rate | Gross Profit | Gross Loss | Profit Factor | Net P&L (Pts) | Net P&L (INR) | Max Drawdown |")
+    println("|-----------------|-----------------|----------|--------------|------------|---------------|---------------+---------------+--------------|")
 
     for (res in optimizationResults) {
         val pfStr = if (res.profitFactor > 900) "999.0+" else String.format("%.2f", res.profitFactor)
-        println("| ${res.trailBuffer} pts      | ${String.format("%.1f", res.winRate)}%    | ${String.format("%.2f", res.grossProfit)} pts | ${String.format("%.2f", res.grossLoss)} pts | $pfStr           | ${String.format("%.2f", res.netPnlPts)} pts   | ₹${String.format("%,.2f", res.netPnlRupees)} | ${String.format("%.2f", res.maxDrawdownPts)} pts |")
+        val paramStr = if (res.strategyName == "Trailing Peak") "Buffer: ${res.parameterValue.toInt()} pts" else "Target: ${res.parameterValue.toInt()} pts"
+        println("| ${res.strategyName.padEnd(15)} | ${paramStr.padEnd(15)} | ${String.format("%.1f", res.winRate)}%    | ${String.format("%.2f", res.grossProfit)} pts | ${String.format("%.2f", res.grossLoss)} pts | $pfStr           | ${String.format("%.2f", res.netPnlPts)} pts   | ₹${String.format("%,.2f", res.netPnlRupees)} | ${String.format("%.2f", res.maxDrawdownPts)} pts |")
     }
-    println("========================================================================================================================")
+    println("======================================================================================================================================")
 
-    // Select Best Resulting Combination (highest Net P&L in INR, tie-breaker Profit Factor)
+    // Select Best Resulting Strategy & Parameter (highest Net P&L in INR, tie-breaker Profit Factor)
     val bestResult = optimizationResults.maxWithOrNull(compareBy<OptimizationResult> { it.netPnlRupees }.thenBy { it.profitFactor })
         ?: optimizationResults.first()
 
-    println("\n🏆 OPTIMAL 1ST LOT EXIT COMBINATION FOUND:")
-    println("• Best Trail Buffer     : ${bestResult.trailBuffer} points")
+    val optimalParamDesc = if (bestResult.strategyName == "Trailing Peak") "Buffer: ${bestResult.parameterValue.toInt()} pts" else "Target: ${bestResult.parameterValue.toInt()} pts"
+
+    println("\n🏆 ABSOLUTE BEST 1ST LOT EXIT STRATEGY FOUND:")
+    println("• Strategy Type         : ${bestResult.strategyName}")
+    println("• Optimal Parameter     : $optimalParamDesc")
     println("• Optimal Win Rate      : ${String.format("%.1f", bestResult.winRate)}%")
     println("• Optimal Profit Factor : ${String.format("%.2f", bestResult.profitFactor)}")
     println("• Optimal Net P&L (INR) : ₹${String.format("%,.2f", bestResult.netPnlRupees)}")
@@ -501,9 +593,9 @@ suspend fun runDerivativeBacktestForRange(
 
     val completedTrades = bestResult.completedTrades
 
-    // Print detailed 2-lot trade report with 1st lot exit at optimal trail buffer peak, 2nd lot exit at actual exit, and cumulative P&L in points and money
+    // Print detailed 2-lot trade report with 1st lot exit at optimal strategy, 2nd lot exit at actual exit, and cumulative P&L in points and money
     println("\n========================================================================================================================================================================")
-    println("DETAILED 2-LOT OPTION BACKTEST REPORT (Optimal Trail Buffer: ${bestResult.trailBuffer} pts | 1 Lot = 65 Qty)")
+    println("DETAILED 2-LOT OPTION BACKTEST REPORT (${bestResult.strategyName} | $optimalParamDesc | 1 Lot = 65 Qty)")
     println("========================================================================================================================================================================")
     
     if (completedTrades.isEmpty()) {
