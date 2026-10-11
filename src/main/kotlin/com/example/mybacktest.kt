@@ -49,6 +49,30 @@ data class OptionTradeResult(
     val cumulativeRupees: Double
 )
 
+data class RawTradeCandidate(
+    val tradeNo: Int,
+    val direction: String,
+    val entryTime: String,
+    val exitTime: String,
+    val derivativeSymbol: String,
+    val entryOptionPrice: Double,
+    val exitOptionPrice: Double,
+    val tradeCandles: List<Candle>
+)
+
+data class OptimizationResult(
+    val trailBuffer: Double,
+    val winRate: Double,
+    val grossProfit: Double,
+    val grossLoss: Double,
+    val profitFactor: Double,
+    val netPnlPts: Double,
+    val netPnlRupees: Double,
+    val maxDrawdownPts: Double,
+    val maxDrawdownRupees: Double,
+    val completedTrades: List<OptionTradeResult>
+)
+
 /**
  * Main application entry point for authentication and executing weekly option backtest.
  */
@@ -202,52 +226,6 @@ suspend fun fetchDerivativeCandles(
 }
 
 /**
- * Helper to record a completed trade and add to P&L.
- */
-fun recordTrade(
-    tradeNo: Int,
-    direction: String,
-    entryTime: String,
-    exitTime: String,
-    derivativeSymbol: String,
-    entryOptionPrice: Double,
-    exitOptionPrice: Double,
-    tradeCandles: List<Candle>,
-    completedTrades: MutableList<OptionTradeResult>,
-    currentCumulativePnl: Double
-): Double {
-    val maxHigh = if (tradeCandles.isNotEmpty()) tradeCandles.maxOfOrNull { it.high } ?: kotlin.math.max(entryOptionPrice, exitOptionPrice) else kotlin.math.max(entryOptionPrice, exitOptionPrice)
-    val firstLotExitPrice = maxHigh
-    val secondLotExitPrice = exitOptionPrice
-
-    val firstLotPnl = firstLotExitPrice - entryOptionPrice
-    val secondLotPnl = secondLotExitPrice - entryOptionPrice
-    val totalTradePnl = firstLotPnl + secondLotPnl
-    val cumulativePnl = currentCumulativePnl + totalTradePnl
-    val lotSize = 65.0
-    val cumulativeRupees = cumulativePnl * lotSize
-
-    completedTrades.add(
-        OptionTradeResult(
-            tradeNo = tradeNo,
-            direction = direction,
-            entryTime = entryTime,
-            exitTime = exitTime,
-            derivativeSymbol = derivativeSymbol,
-            entryOptionPrice = entryOptionPrice,
-            firstLotExitPrice = firstLotExitPrice,
-            secondLotExitPrice = secondLotExitPrice,
-            firstLotPnl = firstLotPnl,
-            secondLotPnl = secondLotPnl,
-            totalTradePnl = totalTradePnl,
-            cumulativePnl = cumulativePnl,
-            cumulativeRupees = cumulativeRupees
-        )
-    )
-    return totalTradePnl
-}
-
-/**
  * Executes the backtest: runs signals on NIFTY index and resolves weekly option symbols strictly via option chain lookup.
  */
 suspend fun runDerivativeBacktestForRange(
@@ -277,10 +255,9 @@ suspend fun runDerivativeBacktestForRange(
     var entryDate = ""
     var derivativeSymbol = ""
     var entryOptionPrice = 0.0
-    var runningCumulativePnl = 0.0
     var tradeCount = 0
     var derivativeCandles = listOf<Candle>()
-    val completedTrades = mutableListOf<OptionTradeResult>()
+    val rawTrades = mutableListOf<RawTradeCandidate>()
 
     for (i in indicatorCandles.indices) {
         val ic = indicatorCandles[i]
@@ -297,17 +274,17 @@ suspend fun runDerivativeBacktestForRange(
 
             if (exitDerivativeBar != null) {
                 val tradeCandles = derivativeCandles.filter { it.timestamp >= entryTime && it.timestamp <= exitDerivativeBar.timestamp }
-                runningCumulativePnl += recordTrade(
-                    tradeNo = tradeCount,
-                    direction = activePosition.direction,
-                    entryTime = entryTime,
-                    exitTime = exitDerivativeBar.timestamp,
-                    derivativeSymbol = derivativeSymbol,
-                    entryOptionPrice = entryOptionPrice,
-                    exitOptionPrice = exitDerivativeBar.close,
-                    tradeCandles = tradeCandles,
-                    completedTrades = completedTrades,
-                    currentCumulativePnl = runningCumulativePnl
+                rawTrades.add(
+                    RawTradeCandidate(
+                        tradeNo = tradeCount,
+                        direction = activePosition.direction,
+                        entryTime = entryTime,
+                        exitTime = exitDerivativeBar.timestamp,
+                        derivativeSymbol = derivativeSymbol,
+                        entryOptionPrice = entryOptionPrice,
+                        exitOptionPrice = exitDerivativeBar.close,
+                        tradeCandles = tradeCandles
+                    )
                 )
             }
             activePosition = null
@@ -375,7 +352,7 @@ suspend fun runDerivativeBacktestForRange(
         } else {
             // Intraday rule: Auto square-off at 15:25 or strategy EXIT
             val isSquareOff = timePart >= "15:25"
-            if (decision.action == "EXIT" || isquareOff) {
+            if (decision.action == "EXIT" || isSquareOff) {
 
                 // Here if exit comes at 10:30 candle close , we are fetching data at 10:35:02 second , so order gets executed at 10:35:02 so we are considering open price of 10:35
 
@@ -391,17 +368,17 @@ suspend fun runDerivativeBacktestForRange(
                 }
 
                 val tradeCandles = derivativeCandles.filter { it.timestamp >= entryTime && it.timestamp <= exitDerivativeBar.timestamp }
-                runningCumulativePnl += recordTrade(
-                    tradeNo = tradeCount,
-                    direction = activePosition.direction,
-                    entryTime = entryTime,
-                    exitTime = exitDerivativeBar.timestamp,
-                    derivativeSymbol = derivativeSymbol,
-                    entryOptionPrice = entryOptionPrice,
-                    exitOptionPrice = exitDerivativeBar.open,
-                    tradeCandles = tradeCandles,
-                    completedTrades = completedTrades,
-                    currentCumulativePnl = runningCumulativePnl
+                rawTrades.add(
+                    RawTradeCandidate(
+                        tradeNo = tradeCount,
+                        direction = activePosition.direction,
+                        entryTime = entryTime,
+                        exitTime = exitDerivativeBar.timestamp,
+                        derivativeSymbol = derivativeSymbol,
+                        entryOptionPrice = entryOptionPrice,
+                        exitOptionPrice = exitDerivativeBar.open,
+                        tradeCandles = tradeCandles
+                    )
                 )
 
                 activePosition = null
@@ -410,9 +387,123 @@ suspend fun runDerivativeBacktestForRange(
         }
     }
 
-    // Print detailed 2-lot trade report with 1st lot exit at max peak, 2nd lot exit at actual exit, and cumulative P&L in points and money
+    // Run Optimizer over multiple Trail Buffer combinations (5 to 40 pts)
+    val testBuffers = listOf(5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0)
+    val optimizationResults = mutableListOf<OptimizationResult>()
+    val lotSize = 65.0
+
+    for (buffer in testBuffers) {
+        val tradesForBuffer = mutableListOf<OptionTradeResult>()
+        var runningCumPnl = 0.0
+        var peak = 0.0
+        var maxDD = 0.0
+        var wins = 0
+        var losses = 0
+        var gProfit = 0.0
+        var gLoss = 0.0
+
+        for ((idx, raw) in rawTrades.withIndex()) {
+            var runningPeak = raw.entryOptionPrice
+            var firstLotExitPrice = raw.entryOptionPrice
+            for (c in raw.tradeCandles) {
+                if (c.high > runningPeak) runningPeak = c.high
+                val triggerPrice = runningPeak - buffer
+                if (c.low <= triggerPrice && triggerPrice > raw.entryOptionPrice) {
+                    firstLotExitPrice = triggerPrice
+                    break
+                }
+            }
+            if (firstLotExitPrice <= raw.entryOptionPrice) {
+                firstLotExitPrice = runningPeak
+            }
+
+            val firstLotPnl = firstLotExitPrice - raw.entryOptionPrice
+            val secondLotPnl = raw.exitOptionPrice - raw.entryOptionPrice
+            val totalTradePnl = firstLotPnl + secondLotPnl
+            runningCumPnl += totalTradePnl
+
+            if (runningCumPnl > peak) peak = runningCumPnl
+            val dd = peak - runningCumPnl
+            if (dd > maxDD) maxDD = dd
+
+            if (totalTradePnl > 0) {
+                wins++
+                gProfit += totalTradePnl
+            } else if (totalTradePnl < 0) {
+                losses++
+                gLoss += kotlin.math.abs(totalTradePnl)
+            }
+
+            tradesForBuffer.add(
+                OptionTradeResult(
+                    tradeNo = idx + 1,
+                    direction = raw.direction,
+                    entryTime = raw.entryTime,
+                    exitTime = raw.exitTime,
+                    derivativeSymbol = raw.derivativeSymbol,
+                    entryOptionPrice = raw.entryOptionPrice,
+                    firstLotExitPrice = firstLotExitPrice,
+                    secondLotExitPrice = raw.exitOptionPrice,
+                    firstLotPnl = firstLotPnl,
+                    secondLotPnl = secondLotPnl,
+                    totalTradePnl = totalTradePnl,
+                    cumulativePnl = runningCumPnl,
+                    cumulativeRupees = runningCumPnl * lotSize
+                )
+            )
+        }
+
+        val winRate = if (tradesForBuffer.isNotEmpty()) (wins.toDouble() / tradesForBuffer.size) * 100 else 0.0
+        val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
+        val netPnlPts = runningCumPnl
+        val netPnlRupees = netPnlPts * lotSize
+
+        optimizationResults.add(
+            OptimizationResult(
+                trailBuffer = buffer,
+                winRate = winRate,
+                grossProfit = gProfit,
+                grossLoss = gLoss,
+                profitFactor = profitFactor,
+                netPnlPts = netPnlPts,
+                netPnlRupees = netPnlRupees,
+                maxDrawdownPts = maxDD,
+                maxDrawdownRupees = maxDD * lotSize,
+                completedTrades = tradesForBuffer
+            )
+        )
+    }
+
+    // Print Optimizer Comparative Summary Table
+    println("\n========================================================================================================================")
+    println("1ST LOT EXIT TRAILING BUFFER OPTIMIZER REPORT (Testing Buffers: 5 to 40 pts | 1 Lot = 65 Qty)")
+    println("========================================================================================================================")
+    println("| Trail Buffer | Win Rate | Gross Profit | Gross Loss | Profit Factor | Net P&L (Pts) | Net P&L (INR) | Max Drawdown |")
+    println("|--------------|----------|--------------|------------|---------------|---------------+---------------+--------------|")
+
+    for (res in optimizationResults) {
+        val pfStr = if (res.profitFactor > 900) "999.0+" else String.format("%.2f", res.profitFactor)
+        println("| ${res.trailBuffer} pts      | ${String.format("%.1f", res.winRate)}%    | ${String.format("%.2f", res.grossProfit)} pts | ${String.format("%.2f", res.grossLoss)} pts | $pfStr           | ${String.format("%.2f", res.netPnlPts)} pts   | ₹${String.format("%,.2f", res.netPnlRupees)} | ${String.format("%.2f", res.maxDrawdownPts)} pts |")
+    }
+    println("========================================================================================================================")
+
+    // Select Best Resulting Combination (highest Net P&L in INR, tie-breaker Profit Factor)
+    val bestResult = optimizationResults.maxWithOrNull(compareBy<OptimizationResult> { it.netPnlRupees }.thenBy { it.profitFactor })
+        ?: optimizationResults.first()
+
+    println("\n🏆 OPTIMAL 1ST LOT EXIT COMBINATION FOUND:")
+    println("• Best Trail Buffer     : ${bestResult.trailBuffer} points")
+    println("• Optimal Win Rate      : ${String.format("%.1f", bestResult.winRate)}%")
+    println("• Optimal Profit Factor : ${String.format("%.2f", bestResult.profitFactor)}")
+    println("• Optimal Net P&L (INR) : ₹${String.format("%,.2f", bestResult.netPnlRupees)}")
+    println("• Optimal Max Drawdown  : ${String.format("%.2f", bestResult.maxDrawdownPts)} pts (₹${String.format("%,.2f", bestResult.maxDrawdownRupees)})")
+    println("========================================================================================================================\n")
+
+    val completedTrades = bestResult.completedTrades
+
+    // Print detailed 2-lot trade report with 1st lot exit at optimal trail buffer peak, 2nd lot exit at actual exit, and cumulative P&L in points and money
     println("\n========================================================================================================================================================================")
-    println("DETAILED 2-LOT OPTION BACKTEST REPORT (1st Lot Exited at Max Peak | 2nd Lot Exited at Strategy Exit | 1 Lot = 65 Qty)")
+    println("DETAILED 2-LOT OPTION BACKTEST REPORT (Optimal Trail Buffer: ${bestResult.trailBuffer} pts | 1 Lot = 65 Qty)")
     println("========================================================================================================================================================================")
     
     if (completedTrades.isEmpty()) {
@@ -456,7 +547,6 @@ suspend fun runDerivativeBacktestForRange(
         println("| ${t.tradeNo} | ${t.direction} | ${t.entryTime} | ${t.exitTime} | ${t.derivativeSymbol} | ${String.format("%.2f", t.entryOptionPrice)} | ${String.format("%.2f", t.firstLotExitPrice)} | ${String.format("%.2f", t.secondLotExitPrice)} | $sign1 ${String.format("%.2f", t.firstLotPnl)} | $sign2 ${String.format("%.2f", t.secondLotPnl)} | $signTrade ${String.format("%.2f", t.totalTradePnl)} | $signCumPts ${String.format("%.2f", t.cumulativePnl)} pts | $signCumRs ₹${String.format("%,.2f", t.cumulativeRupees)} |")
     }
 
-    val lotSize = 65
     val combinedStrategyRupees = (totalFirstLotPnl + totalSecondLotPnl) * lotSize
     val peakRupees = peak * lotSize
     val maxDdRupees = maxDD * lotSize
