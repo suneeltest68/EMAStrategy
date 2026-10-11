@@ -179,7 +179,7 @@ class LiveTradingRunner(
 
                         val msg = "🔔 [ Current Signal ${decision.action} | Derivative: $derivativeSymbol"
                         println(msg)
-                        TelegramNotifier.sendAlert(msg)
+//                        TelegramNotifier.sendAlert(msg)
 
                         if (activePosition == null) {
                             if (decision.action == "ENTER_LONG" || decision.action == "ENTER_SHORT") {
