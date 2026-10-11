@@ -137,7 +137,7 @@ fun main() {
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
 //    val rangeStart = "2026-10-05"
-    val rangeStart = "2025-01-01"
+    val rangeStart = "2026-01-01"
     val rangeEnd = "2026-09-30"
 //    val rangeStart = java.time.LocalDate.now().toString()
 //    val rangeEnd = java.time.LocalDate.now().toString()
@@ -562,16 +562,112 @@ suspend fun runDerivativeBacktestForRange(
         )
     }
 
+    // 3. Test ATR Trailing Stop Strategies
+    val atrMultipliers = listOf(1.0, 1.5, 2.0, 2.5, 3.0)
+    for (multiplier in atrMultipliers) {
+        val tradesForAtr = mutableListOf<OptionTradeResult>()
+        var runningCumPnl = 0.0
+        var peak = 0.0
+        var maxDD = 0.0
+        var wins = 0
+        var losses = 0
+        var gProfit = 0.0
+        var gLoss = 0.0
+
+        for ((idx, raw) in rawTrades.withIndex()) {
+            val highs = raw.tradeCandles.map { it.high }
+            val lows = raw.tradeCandles.map { it.low }
+            val closes = raw.tradeCandles.map { it.close }
+            val atrList = TechnicalIndicators.calculateAtr(highs, lows, closes, 14)
+            val entryAtr = if (atrList.isNotEmpty()) atrList.last() else 15.0
+            val buffer = multiplier * entryAtr
+
+            var runningPeak = raw.entryOptionPrice
+            var firstLotExitPrice = raw.entryOptionPrice
+            for (c in raw.tradeCandles) {
+                if (c.high > runningPeak) runningPeak = c.high
+                val triggerPrice = runningPeak - buffer
+                if (c.low <= triggerPrice && triggerPrice > raw.entryOptionPrice) {
+                    firstLotExitPrice = triggerPrice
+                    break
+                }
+            }
+            if (firstLotExitPrice <= raw.entryOptionPrice) {
+                firstLotExitPrice = runningPeak
+            }
+
+            val firstLotPnl = firstLotExitPrice - raw.entryOptionPrice
+            val secondLotPnl = raw.exitOptionPrice - raw.entryOptionPrice
+            val totalTradePnl = firstLotPnl + secondLotPnl
+            runningCumPnl += totalTradePnl
+
+            if (runningCumPnl > peak) peak = runningCumPnl
+            val dd = peak - runningCumPnl
+            if (dd > maxDD) maxDD = dd
+
+            if (totalTradePnl > 0) {
+                wins++
+                gProfit += totalTradePnl
+            } else if (totalTradePnl < 0) {
+                losses++
+                gLoss += kotlin.math.abs(totalTradePnl)
+            }
+
+            tradesForAtr.add(
+                OptionTradeResult(
+                    tradeNo = idx + 1,
+                    direction = raw.direction,
+                    entryTime = raw.entryTime,
+                    exitTime = raw.exitTime,
+                    derivativeSymbol = raw.derivativeSymbol,
+                    entryOptionPrice = raw.entryOptionPrice,
+                    firstLotExitPrice = firstLotExitPrice,
+                    secondLotExitPrice = raw.exitOptionPrice,
+                    firstLotPnl = firstLotPnl,
+                    secondLotPnl = secondLotPnl,
+                    totalTradePnl = totalTradePnl,
+                    cumulativePnl = runningCumPnl,
+                    cumulativeRupees = runningCumPnl * lotSize
+                )
+            )
+        }
+
+        val winRate = if (tradesForAtr.isNotEmpty()) (wins.toDouble() / tradesForAtr.size) * 100 else 0.0
+        val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
+        val netPnlPts = runningCumPnl
+        val netPnlRupees = netPnlPts * lotSize
+
+        optimizationResults.add(
+            OptimizationResult(
+                strategyName = "ATR Trailing",
+                parameterValue = multiplier,
+                winRate = winRate,
+                grossProfit = gProfit,
+                grossLoss = gLoss,
+                profitFactor = profitFactor,
+                netPnlPts = netPnlPts,
+                netPnlRupees = netPnlRupees,
+                maxDrawdownPts = maxDD,
+                maxDrawdownRupees = maxDD * lotSize,
+                completedTrades = tradesForAtr
+            )
+        )
+    }
+
     // Print Optimizer Comparative Summary Table
     println("\n======================================================================================================================================")
-    println("1ST LOT EXIT STRATEGY & PARAMETER OPTIMIZER REPORT (Trailing Peak vs. Fixed Target | 1 Lot = 65 Qty)")
+    println("1ST LOT EXIT STRATEGY & PARAMETER OPTIMIZER REPORT (Trailing Peak vs. Fixed Target vs. ATR Trailing | 1 Lot = 65 Qty)")
     println("======================================================================================================================================")
     println("| Strategy Type   | Parameter Value | Win Rate | Gross Profit | Gross Loss | Profit Factor | Net P&L (Pts) | Net P&L (INR) | Max Drawdown |")
     println("|-----------------|-----------------|----------|--------------|------------|---------------|---------------+---------------+--------------|")
 
     for (res in optimizationResults) {
         val pfStr = if (res.profitFactor > 900) "999.0+" else String.format("%.2f", res.profitFactor)
-        val paramStr = if (res.strategyName == "Trailing Peak") "Buffer: ${res.parameterValue.toInt()} pts" else "Target: ${res.parameterValue.toInt()} pts"
+        val paramStr = when (res.strategyName) {
+            "Trailing Peak" -> "Buffer: ${res.parameterValue.toInt()} pts"
+            "Fixed Target" -> "Target: ${res.parameterValue.toInt()} pts"
+            else -> "ATR Mult: ${String.format("%.1f", res.parameterValue)}x"
+        }
         println("| ${res.strategyName.padEnd(15)} | ${paramStr.padEnd(15)} | ${String.format("%.1f", res.winRate)}%    | ${String.format("%.2f", res.grossProfit)} pts | ${String.format("%.2f", res.grossLoss)} pts | $pfStr           | ${String.format("%.2f", res.netPnlPts)} pts   | ₹${String.format("%,.2f", res.netPnlRupees)} | ${String.format("%.2f", res.maxDrawdownPts)} pts |")
     }
     println("======================================================================================================================================")
@@ -580,7 +676,11 @@ suspend fun runDerivativeBacktestForRange(
     val bestResult = optimizationResults.maxWithOrNull(compareBy<OptimizationResult> { it.netPnlRupees }.thenBy { it.profitFactor })
         ?: optimizationResults.first()
 
-    val optimalParamDesc = if (bestResult.strategyName == "Trailing Peak") "Buffer: ${bestResult.parameterValue.toInt()} pts" else "Target: ${bestResult.parameterValue.toInt()} pts"
+    val optimalParamDesc = when (bestResult.strategyName) {
+        "Trailing Peak" -> "Buffer: ${bestResult.parameterValue.toInt()} pts"
+        "Fixed Target" -> "Target: ${bestResult.parameterValue.toInt()} pts"
+        else -> "ATR Mult: ${String.format("%.1f", bestResult.parameterValue)}x"
+    }
 
     println("\n🏆 ABSOLUTE BEST 1ST LOT EXIT STRATEGY FOUND:")
     println("• Strategy Type         : ${bestResult.strategyName}")
