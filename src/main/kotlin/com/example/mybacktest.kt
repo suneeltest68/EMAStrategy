@@ -137,7 +137,7 @@ fun main() {
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
 //    val rangeStart = "2026-10-05"
-    val rangeStart = "2026-01-01"
+    val rangeStart = "2025-01-01"
     val rangeEnd = "2026-09-30"
 //    val rangeStart = java.time.LocalDate.now().toString()
 //    val rangeEnd = java.time.LocalDate.now().toString()
