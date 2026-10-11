@@ -134,6 +134,16 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
+    suspend fun fetchStockQuotes(appId: String, accessToken: String, symbols: String): JSONObject? {
+        return withContext(Dispatchers.IO) {
+            val result = repository.getStockQuotes(appId, accessToken, symbols)
+            if (result.isFailure) {
+                println("Stock Quotes Error for $symbols: ${result.exceptionOrNull()?.message}")
+            }
+            result.getOrNull()
+        }
+    }
+
     fun getCachedToken(): String? {
         return repository.getCachedToken()
     }

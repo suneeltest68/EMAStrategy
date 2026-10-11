@@ -107,7 +107,7 @@ class LiveTradingRunner(
                 return@launch
             }
 
-            println("Successfully loaded ${candles.size} warmup candles. Synchronizing with 5-min candle boundaries...")
+            println("Successfully loaded ${candles.size} warmup candles. Synchronizing with 1-min candle boundaries...")
 
             var activePosition: EmaTrendPositionContext? = null
             var derivativeSymbol = ""
@@ -128,7 +128,7 @@ class LiveTradingRunner(
                 val currentTime = now.toLocalTime()
                 val currentDate = now.toLocalDate().toString()
 
-                val marketOpen = LocalTime.of(9, 15)
+                val marketOpen = LocalTime.of(9, 16)
                 val marketClose = LocalTime.of(15, 30)
                 val squareOffTime = LocalTime.of(15, 25)
 
@@ -152,9 +152,11 @@ class LiveTradingRunner(
                 if (latestHistory != null) {
                     val freshCandles = parseFyersCandles(latestHistory)
                     if (freshCandles.isNotEmpty()) {
-                        val indicatorCandles = TechnicalIndicators.buildIndicators(freshCandles, config)
+                        val completedCandles = if (freshCandles.size > 1) freshCandles.dropLast(1) else freshCandles
+                        val indicatorCandles = TechnicalIndicators.buildIndicators(completedCandles, config)
                         val lastIc = indicatorCandles.last()
                         val timePart = lastIc.timestamp.substring(11, 16)
+
                         println("[Live Status] Check at ${lastIc.timestamp} | Nifty Close: ${lastIc.close} | EMA4: ${String.format("%.2f", lastIc.ema4)} | EMA11: ${String.format("%.2f", lastIc.ema11)} | EMA18: ${String.format("%.2f", lastIc.ema18)} | Position: ${activePosition?.direction ?: "FLAT"}")
 
                         if (activePosition != null && (currentTime.isAfter(squareOffTime) || currentTime == squareOffTime || lastIc.timestamp.substring(0, 10) > entryDate)) {
@@ -196,37 +198,29 @@ class LiveTradingRunner(
                                 println(msg)
                                 TelegramNotifier.sendAlert(msg)
 
-                                val dHistory = viewModel.fetchHistoricalData(appId, token, derivativeSymbol, "5S", entryDate, entryDate)
-                                if (dHistory != null) {
-                                    derivativeCandles = parseFyersCandles(dHistory)
-                                    val entryBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime } ?: derivativeCandles.firstOrNull()
-                                    if (entryBar != null) {
-                                        entryOptionPrice = entryBar.open
-                                        activePosition = EmaTrendPositionContext(
-                                            direction = if (isLong) "LONG" else "SHORT",
-                                            entryUnderlying = entrySpot,
-                                            stopUnderlying = lastIc.ema11
-                                        )
-                                        println("✅ Position Entered at Option Price: $entryOptionPrice")
-                                    }
-                                }
+                                val liveQuotes = viewModel.fetchStockQuotes(appId, token, derivativeSymbol)
+                                val liveLtp = liveQuotes?.let { OptionUtils.extractLtpFromQuotes(it, derivativeSymbol) } ?: 0.0
+                                entryOptionPrice = liveLtp
+                                activePosition = EmaTrendPositionContext(
+                                    direction = if (isLong) "LONG" else "SHORT",
+                                    entryUnderlying = entrySpot,
+                                    stopUnderlying = lastIc.ema11
+                                )
+                                println("✅ Position Entered at Live Option Price: $entryOptionPrice")
                             }
                         } else {
                             val isSquareOff = timePart >= "15:25"
                             if (decision.action == "EXIT" || isSquareOff) {
-                                val currentCandleDate = lastIc.timestamp.substring(0, 10)
-                                val exitTime = if (isSquareOff && timePart > "15:25") "$currentCandleDate 15:25" else lastIc.timestamp
-                                val exitBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime } ?: derivativeCandles.lastOrNull()
-                                if (exitBar != null) {
-                                    val pnl = recordTrade(tradeCount, activePosition.direction, entryTime, exitBar.timestamp, derivativeSymbol, entryOptionPrice, exitBar.close, mutableListOf())
-                                    totalOptionPnl += pnl
-                                    val msg = "🏁 [LIVE EXIT] Trade #$tradeCount exited at ${exitBar.timestamp} | PnL: ${String.format("%.2f", pnl)} pts | Total PnL: ${String.format("%.2f", totalOptionPnl)} pts"
-                                    println(msg)
-                                    TelegramNotifier.sendAlert(msg)
-                                    TradingJournalService.logTrade(TradeJournalEntry(derivativeSymbol, entryOptionPrice, exitBar.close, 1, pnl, decision.exitReason.ifEmpty { "SQUARE_OFF" }))
-                                }
+                                val liveQuotes = viewModel.fetchStockQuotes(appId, token, derivativeSymbol)
+                                val liveLtp = liveQuotes?.let { OptionUtils.extractLtpFromQuotes(it, derivativeSymbol) } ?: 0.0
+                                val exitOptionPrice = liveLtp
+                                val pnl = recordTrade(tradeCount, activePosition.direction, entryTime, lastIc.timestamp, derivativeSymbol, entryOptionPrice, exitOptionPrice, mutableListOf())
+                                totalOptionPnl += pnl
+                                val msg = "🏁 [LIVE EXIT] Trade #$tradeCount exited at ${lastIc.timestamp} | Exit Price: $exitOptionPrice | PnL: ${String.format("%.2f", pnl)} pts | Total PnL: ${String.format("%.2f", totalOptionPnl)} pts"
+                                println(msg)
+                                TelegramNotifier.sendAlert(msg)
+                                TradingJournalService.logTrade(TradeJournalEntry(derivativeSymbol, entryOptionPrice, exitOptionPrice, 1, pnl, decision.exitReason.ifEmpty { "SQUARE_OFF" }))
                                 activePosition = null
-                                derivativeCandles = emptyList()
                             }
                         }
                     }

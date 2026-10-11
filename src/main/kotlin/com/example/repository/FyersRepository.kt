@@ -180,6 +180,26 @@ class FyersRepository {
         }
     }
 
+    fun getStockQuotes(appId: String, accessToken: String, symbols: String): Result<JSONObject> {
+        return try {
+            val fyersClass = FyersClass.getInstance()
+            fyersClass.clientId = appId
+            fyersClass.accessToken = accessToken
+
+            val tuple = fyersClass.GetStockQuotes(symbols)
+            val json = tuple?.Item1()
+            val error = tuple?.Item2()
+
+            if (error == null && json != null) {
+                Result.success(json)
+            } else {
+                Result.failure(Exception("Stock Quotes Error: $error"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun getCachedToken(): String? {
         if (!tokenFile.exists()) return null
         try {

@@ -111,4 +111,24 @@ object OptionUtils {
         }
         return null
     }
+
+    /**
+     * Extracts Last Traded Price (LTP) for a given symbol from Fyers GetStockQuotes response.
+     */
+    fun extractLtpFromQuotes(quotesJson: org.json.JSONObject, symbol: String): Double? {
+        try {
+            val dataArray = quotesJson.optJSONArray("d") ?: return null
+            for (i in 0 until dataArray.length()) {
+                val item = dataArray.getJSONObject(i)
+                val name = item.optString("n", "")
+                if (name.equals(symbol, ignoreCase = true)) {
+                    val vObj = item.optJSONObject("v") ?: continue
+                    return vObj.optDouble("lp", 0.0)
+                }
+            }
+        } catch (e: Exception) {
+            println("Error extracting LTP for $symbol from quotes: ${e.message}")
+        }
+        return null
+    }
 }

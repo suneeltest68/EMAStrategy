@@ -108,7 +108,16 @@ class ForBackTestingLiveTradingRunner(
                         val indicatorCandles = TechnicalIndicators.buildIndicators(freshCandles, config)
                         val lastIc = indicatorCandles.last()
                         val timePart = lastIc.timestamp.substring(11, 16)
+                        val datePart = lastIc.timestamp.substring(0, 10)
+                        val todayStr = java.time.LocalDate.now(istZone).toString()
+
                         println("[Live Status] Check at ${lastIc.timestamp} | Nifty Close: ${lastIc.close} | EMA4: ${String.format("%.2f", lastIc.ema4)} | EMA11: ${String.format("%.2f", lastIc.ema11)} | EMA18: ${String.format("%.2f", lastIc.ema18)} | Position: ${activePosition?.direction ?: "FLAT"}")
+
+                        if (datePart == todayStr && timePart == "09:15") {
+                            println("[Filter] Skipping 09:15 market open candle for today.")
+                            delay(2000.milliseconds)
+                            continue
+                        }
 
                        /* if (activePosition != null && (currentTime.isAfter(squareOffTime) || currentTime == squareOffTime || lastIc.timestamp.substring(0, 10) > entryDate)) {
                             val exitTime = "$entryDate 15:25"
