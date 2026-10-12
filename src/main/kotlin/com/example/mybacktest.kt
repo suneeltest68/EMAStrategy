@@ -2,16 +2,6 @@
  * ============================================================================
  * NIFTY EMA 4/11/18 Trend-Following Strategy & Weekly Option Backtest Runner
  * ============================================================================
- *
- * Workflow:
- * 1. Fetch NIFTY 50 Index 5-min historical data for signal generation.
- * 2. When NIFTY triggers an entry between September 30th and October 5th, 2026:
- *    - Resolve weekly option symbol strictly via live Fyers option chain lookup.
- *    - Fetch 1-minute historical candle data for that specific derivative option contract.
- * 3. When NIFTY exits:
- *    - Match the 1-minute derivative candle at exit time to calculate exact option P&L.
- * 4. Present all executed trades in a clean Markdown summary table.
- * ============================================================================
  */
 package com.example
 
@@ -40,38 +30,10 @@ data class OptionTradeResult(
     val exitTime: String,
     val derivativeSymbol: String,
     val entryOptionPrice: Double,
-    val firstLotExitPrice: Double,
-    val secondLotExitPrice: Double,
-    val firstLotPnl: Double,
-    val secondLotPnl: Double,
-    val totalTradePnl: Double,
+    val exitOptionPrice: Double,
+    val pnl: Double,
     val cumulativePnl: Double,
     val cumulativeRupees: Double
-)
-
-data class RawTradeCandidate(
-    val tradeNo: Int,
-    val direction: String,
-    val entryTime: String,
-    val exitTime: String,
-    val derivativeSymbol: String,
-    val entryOptionPrice: Double,
-    val exitOptionPrice: Double,
-    val tradeCandles: List<Candle>
-)
-
-data class OptimizationResult(
-    val strategyName: String,
-    val parameterValue: Double,
-    val winRate: Double,
-    val grossProfit: Double,
-    val grossLoss: Double,
-    val profitFactor: Double,
-    val netPnlPts: Double,
-    val netPnlRupees: Double,
-    val maxDrawdownPts: Double,
-    val maxDrawdownRupees: Double,
-    val completedTrades: List<OptionTradeResult>
 )
 
 /**
@@ -133,18 +95,14 @@ fun main() {
 }
 
 /**
- * Fetches NIFTY index data, runs strategy signals from September 30th to October 5th, 2026, and resolves weekly options.
+ * Fetches NIFTY index data, runs strategy signals, and resolves weekly options.
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
-//    val rangeStart = "2026-10-05"
-    val rangeStart = "2026-01-01"
-    val rangeEnd = "2026-09-30"
-//    val rangeStart = java.time.LocalDate.now().toString()
-//    val rangeEnd = java.time.LocalDate.now().toString()
+    val rangeStart = "2026-08-01"
+    val rangeEnd = "2026-08-31"
     val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
+    val indexSymbol = "NSE:NIFTY50-INDEX"
 
-//    val indexSymbol = "BSE:SENSEX-INDEX" // Change to "NSE:NIFTY50-INDEX" for Nifty or "BSE:SENSEX-INDEX" for Sensex // Set to "NSE:NIFTY50-INDEX" for Nifty or "BSE:SENSEX-INDEX" for Sensex
-    val indexSymbol = "NSE:NIFTY50-INDEX" // Change to "NSE:NIFTY50-INDEX" for Nifty or "BSE:SENSEX-INDEX" for Sensex // Set to "NSE:NIFTY50-INDEX" for Nifty or "BSE:SENSEX-INDEX" for Sensex
     println("\n[3] Fetching Historical Data for $indexSymbol from Fyers API ($rangeFrom to $rangeEnd)...")
     val history = viewModel.fetchHistoricalDataInChunks(
         appId = appId,
@@ -154,15 +112,6 @@ suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: S
         rangeFrom = rangeFrom,
         rangeTo = rangeEnd
     )
-
-    /*val jsonString = ""
-    val history = try {
-        JSONObject(jsonString)
-    } catch (e: org.json.JSONException) {
-        // Handle parsing error
-        println("Invalid JSON: ${e.message}")
-        null
-    }*/
 
     if (history != null) {
         println("Successfully fetched historical data from Fyers API. Parsing candles...")
@@ -179,7 +128,7 @@ suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: S
 }
 
 /**
- * Parses Fyers historical JSON response into a list of [Candle] objects.
+ * Parses Fyers historical JSON response into a list of [Candle] objects with seconds precision.
  */
 fun parseFyersCandles(json: JSONObject): List<Candle> {
     val candles = mutableListOf<Candle>()
@@ -195,7 +144,7 @@ fun parseFyersCandles(json: JSONObject): List<Candle> {
             val volume = item.optDouble(5, 0.0)
 
             val zdt = Instant.ofEpochSecond(epoch).atZone(ZoneId.of("Asia/Kolkata"))
-            val timeStr = zdt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+            val timeStr = zdt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
 
             candles.add(Candle(timestamp = timeStr, open = open, high = high, low = low, close = close, volume = volume, epoch = epoch))
         }
@@ -227,7 +176,8 @@ suspend fun fetchDerivativeCandles(
 }
 
 /**
- * Executes the backtest: runs signals on NIFTY index and resolves weekly option symbols strictly via option chain lookup.
+ * Executes the backtest using Pure EMA 11 Strategy Exit (no trailing stops/partial exits),
+ * with 03:20 PM intraday cutoffs and Daily Max Loss Limit (₹11,000).
  */
 suspend fun runDerivativeBacktestForRange(
     viewModel: AuthViewModel,
@@ -240,7 +190,7 @@ suspend fun runDerivativeBacktestForRange(
 ) {
     println("\n==============================================================")
     println("EXECUTING WEEKLY EXPIRY OPTION BACKTEST ($startDate to $endDate)")
-    println("Parent: $indexSymbol | Derivative: ATM Option Data")
+    println("Parent: $indexSymbol | Strategy: Pure EMA 11 Strategy Exit")
     println("==============================================================\n")
 
     val config = EmaTrendConfig(
@@ -256,9 +206,15 @@ suspend fun runDerivativeBacktestForRange(
     var entryDate = ""
     var derivativeSymbol = ""
     var entryOptionPrice = 0.0
+    var runningCumulativePnl = 0.0
     var tradeCount = 0
     var derivativeCandles = listOf<Candle>()
-    val rawTrades = mutableListOf<RawTradeCandidate>()
+    val completedTrades = mutableListOf<OptionTradeResult>()
+    val lotSize = 65.0
+    val dailyMaxLossLimit = -5500.0
+
+    val dailyPnlMap = mutableMapOf<String, Double>()
+    val haltedDays = mutableSetOf<String>()
 
     for (i in indicatorCandles.indices) {
         val ic = indicatorCandles[i]
@@ -269,22 +225,37 @@ suspend fun runDerivativeBacktestForRange(
 
         // Intraday rule: Ensure any active position from a previous day is squared off by 15:20 of entryDate
         if (activePosition != null && candleDate > entryDate) {
-            val exitTime = "$entryDate 15:20"
+            if (haltedDays.contains(candleDate)) continue
+
+            val exitTime = "$entryDate 15:20:00"
             val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime }
                 ?: derivativeCandles.lastOrNull()
 
             if (exitDerivativeBar != null) {
-                val tradeCandles = derivativeCandles.filter { it.timestamp >= entryTime && it.timestamp <= exitDerivativeBar.timestamp }
-                rawTrades.add(
-                    RawTradeCandidate(
+                tradeCount++
+                val exitOptionPrice = exitDerivativeBar.close
+                val pnl = exitOptionPrice - entryOptionPrice
+                val tradeRupees = pnl * lotSize
+
+                val dayPnl = (dailyPnlMap[candleDate] ?: 0.0) + tradeRupees
+                dailyPnlMap[candleDate] = dayPnl
+                if (dayPnl <= dailyMaxLossLimit) {
+                    haltedDays.add(candleDate)
+                }
+
+                runningCumulativePnl += pnl
+                completedTrades.add(
+                    OptionTradeResult(
                         tradeNo = tradeCount,
                         direction = activePosition.direction,
                         entryTime = entryTime,
                         exitTime = exitDerivativeBar.timestamp,
                         derivativeSymbol = derivativeSymbol,
                         entryOptionPrice = entryOptionPrice,
-                        exitOptionPrice = exitDerivativeBar.close,
-                        tradeCandles = tradeCandles
+                        exitOptionPrice = exitOptionPrice,
+                        pnl = pnl,
+                        cumulativePnl = runningCumulativePnl,
+                        cumulativeRupees = runningCumulativePnl * lotSize
                     )
                 )
             }
@@ -294,22 +265,19 @@ suspend fun runDerivativeBacktestForRange(
 
         val slice = indicatorCandles.subList(0, i + 1)
         val decision = engine.evaluate(slice, activePosition)
+        var plusMinute = 1
 
         if (activePosition == null) {
             if ((decision.action == "ENTER_LONG" || decision.action == "ENTER_SHORT") && timePart <= "15:20") {
-                tradeCount++
+                if (haltedDays.contains(candleDate)) continue
+
                 val isLong = decision.action == "ENTER_LONG"
                 val entrySpot = ic.close
 
-                /*entryTime = ic.timestamp
-                entryDate = candleDate*/
-//                println(entryTime +" Original")
-
-                entryTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                    .plusMinutes(1)
-                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                entryTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                    .plusMinutes(plusMinute.toLong())
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
                 entryDate = entryTime.substring(0, 10)
-//                println(entryTime +" Plus One")
                 val optionType = if (isLong) "CE" else "PE"
                 val isHistorical = java.time.LocalDate.parse(candleDate).isBefore(java.time.LocalDate.now().minusDays(7))
 
@@ -337,12 +305,9 @@ suspend fun runDerivativeBacktestForRange(
                     )
                     derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, candleDate, candleDate)
                 }
-//                println("\u001B[32m🔔 [PARENT INDEX SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} Triggered at $entryTime\u001B[0m  first candle time ${derivativeCandles[0].timestamp}")
-                // Here if entry comes at 9:30 candle close , we are fetching data at 9:35:02 second , so order gets executed at 9:35:02 so we are considering open price od 9:35
                 val entryDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= entryTime }
                     ?: throw IllegalStateException("No 1-min derivative candle found at or after entry time $entryTime for $derivativeSymbol")
-                entryOptionPrice = entryDerivativeBar.open
-//                println(entryDerivativeBar.timestamp +" Derivative Candle")
+                entryOptionPrice = if(plusMinute==1) entryDerivativeBar.open else entryDerivativeBar.close
 
                 activePosition = EmaTrendPositionContext(
                     direction = if (isLong) "LONG" else "SHORT",
@@ -351,16 +316,20 @@ suspend fun runDerivativeBacktestForRange(
                 )
             }
         } else {
-            // Intraday rule: Auto square-off at 15:20 or strategy EXIT
+            // Intraday rule: Auto square-off at 15:20 or strategy EXIT (EMA 11 Exit)
             val isSquareOff = timePart >= "15:20"
             if (decision.action == "EXIT" || isSquareOff) {
+                if (haltedDays.contains(candleDate)) {
+                    activePosition = null
+                    derivativeCandles = emptyList()
+                    continue
+                }
 
-                // Here if exit comes at 10:30 candle close , we are fetching data at 10:35:02 second , so order gets executed at 10:35:02 so we are considering open price of 10:35
-
-                val validExitTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                    .plusMinutes(1)
-                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                val exitTime = if (isSquareOff && timePart > "15:20") "$candleDate 15:20" else validExitTime
+                tradeCount++
+                val validExitTime = LocalDateTime.parse(ic.timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                    .plusMinutes(plusMinute.toLong())
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                val exitTime = if (isSquareOff && timePart > "15:20") "$candleDate 15:20:00" else validExitTime
                 val exitDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime } ?: run {
                     derivativeCandles = fetchDerivativeCandles(viewModel, appId, token, derivativeSymbol, entryDate, candleDate)
                     derivativeCandles.firstOrNull { it.timestamp >= exitTime }
@@ -368,17 +337,29 @@ suspend fun runDerivativeBacktestForRange(
                         ?: throw IllegalStateException("No 1-min derivative candle found at or after exit time $exitTime for $derivativeSymbol")
                 }
 
-                val tradeCandles = derivativeCandles.filter { it.timestamp >= entryTime && it.timestamp <= exitDerivativeBar.timestamp }
-                rawTrades.add(
-                    RawTradeCandidate(
+                val exitOptionPrice = if(plusMinute==1) exitDerivativeBar.open else exitDerivativeBar.close
+                val pnl = exitOptionPrice - entryOptionPrice
+                val tradeRupees = pnl * lotSize
+
+                val dayPnl = (dailyPnlMap[candleDate] ?: 0.0) + tradeRupees
+                dailyPnlMap[candleDate] = dayPnl
+                if (dayPnl <= dailyMaxLossLimit) {
+                    haltedDays.add(candleDate)
+                }
+
+                runningCumulativePnl += pnl
+                completedTrades.add(
+                    OptionTradeResult(
                         tradeNo = tradeCount,
                         direction = activePosition.direction,
                         entryTime = entryTime,
                         exitTime = exitDerivativeBar.timestamp,
                         derivativeSymbol = derivativeSymbol,
                         entryOptionPrice = entryOptionPrice,
-                        exitOptionPrice = exitDerivativeBar.open,
-                        tradeCandles = tradeCandles
+                        exitOptionPrice = exitOptionPrice,
+                        pnl = pnl,
+                        cumulativePnl = runningCumulativePnl,
+                        cumulativeRupees = runningCumulativePnl * lotSize
                     )
                 )
 
@@ -388,321 +369,16 @@ suspend fun runDerivativeBacktestForRange(
         }
     }
 
-    // Run Optimizer over Trailing Peak and Fixed Target Strategies
-    val optimizationResults = mutableListOf<OptimizationResult>()
-    val lotSize = 65.0
-
-    // 1. Test Trailing Peak Strategies
-    val trailBuffers = listOf(10.0, 15.0, 20.0, 25.0, 30.0)
-    for (buffer in trailBuffers) {
-        val tradesForBuffer = mutableListOf<OptionTradeResult>()
-        var runningCumPnl = 0.0
-        var peak = 0.0
-        var maxDD = 0.0
-        var wins = 0
-        var losses = 0
-        var gProfit = 0.0
-        var gLoss = 0.0
-
-        for ((idx, raw) in rawTrades.withIndex()) {
-            var runningPeak = raw.entryOptionPrice
-            var firstLotExitPrice = raw.entryOptionPrice
-            for (c in raw.tradeCandles) {
-                if (c.high > runningPeak) runningPeak = c.high
-                val triggerPrice = runningPeak - buffer
-                if (c.low <= triggerPrice && triggerPrice > raw.entryOptionPrice) {
-                    firstLotExitPrice = triggerPrice
-                    break
-                }
-            }
-            if (firstLotExitPrice <= raw.entryOptionPrice) {
-                firstLotExitPrice = runningPeak
-            }
-
-            val firstLotPnl = firstLotExitPrice - raw.entryOptionPrice
-            val secondLotPnl = raw.exitOptionPrice - raw.entryOptionPrice
-            val totalTradePnl = firstLotPnl + secondLotPnl
-            runningCumPnl += totalTradePnl
-
-            if (runningCumPnl > peak) peak = runningCumPnl
-            val dd = peak - runningCumPnl
-            if (dd > maxDD) maxDD = dd
-
-            if (totalTradePnl > 0) {
-                wins++
-                gProfit += totalTradePnl
-            } else if (totalTradePnl < 0) {
-                losses++
-                gLoss += kotlin.math.abs(totalTradePnl)
-            }
-
-            tradesForBuffer.add(
-                OptionTradeResult(
-                    tradeNo = idx + 1,
-                    direction = raw.direction,
-                    entryTime = raw.entryTime,
-                    exitTime = raw.exitTime,
-                    derivativeSymbol = raw.derivativeSymbol,
-                    entryOptionPrice = raw.entryOptionPrice,
-                    firstLotExitPrice = firstLotExitPrice,
-                    secondLotExitPrice = raw.exitOptionPrice,
-                    firstLotPnl = firstLotPnl,
-                    secondLotPnl = secondLotPnl,
-                    totalTradePnl = totalTradePnl,
-                    cumulativePnl = runningCumPnl,
-                    cumulativeRupees = runningCumPnl * lotSize
-                )
-            )
-        }
-
-        val winRate = if (tradesForBuffer.isNotEmpty()) (wins.toDouble() / tradesForBuffer.size) * 100 else 0.0
-        val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
-        val netPnlPts = runningCumPnl
-        val netPnlRupees = netPnlPts * lotSize
-
-        optimizationResults.add(
-            OptimizationResult(
-                strategyName = "Trailing Peak",
-                parameterValue = buffer,
-                winRate = winRate,
-                grossProfit = gProfit,
-                grossLoss = gLoss,
-                profitFactor = profitFactor,
-                netPnlPts = netPnlPts,
-                netPnlRupees = netPnlRupees,
-                maxDrawdownPts = maxDD,
-                maxDrawdownRupees = maxDD * lotSize,
-                completedTrades = tradesForBuffer
-            )
-        )
-    }
-
-    // 2. Test Fixed Target Strategies
-    val fixedTargets = listOf(15.0, 25.0, 35.0, 50.0, 75.0)
-    for (target in fixedTargets) {
-        val tradesForTarget = mutableListOf<OptionTradeResult>()
-        var runningCumPnl = 0.0
-        var peak = 0.0
-        var maxDD = 0.0
-        var wins = 0
-        var losses = 0
-        var gProfit = 0.0
-        var gLoss = 0.0
-
-        for ((idx, raw) in rawTrades.withIndex()) {
-            val targetPrice = raw.entryOptionPrice + target
-            var firstLotExitPrice = raw.entryOptionPrice
-            var hitTarget = false
-            for (c in raw.tradeCandles) {
-                if (c.high >= targetPrice) {
-                    firstLotExitPrice = targetPrice
-                    hitTarget = true
-                    break
-                }
-            }
-            if (!hitTarget) {
-                firstLotExitPrice = raw.exitOptionPrice
-            }
-
-            val firstLotPnl = firstLotExitPrice - raw.entryOptionPrice
-            val secondLotPnl = raw.exitOptionPrice - raw.entryOptionPrice
-            val totalTradePnl = firstLotPnl + secondLotPnl
-            runningCumPnl += totalTradePnl
-
-            if (runningCumPnl > peak) peak = runningCumPnl
-            val dd = peak - runningCumPnl
-            if (dd > maxDD) maxDD = dd
-
-            if (totalTradePnl > 0) {
-                wins++
-                gProfit += totalTradePnl
-            } else if (totalTradePnl < 0) {
-                losses++
-                gLoss += kotlin.math.abs(totalTradePnl)
-            }
-
-            tradesForTarget.add(
-                OptionTradeResult(
-                    tradeNo = idx + 1,
-                    direction = raw.direction,
-                    entryTime = raw.entryTime,
-                    exitTime = raw.exitTime,
-                    derivativeSymbol = raw.derivativeSymbol,
-                    entryOptionPrice = raw.entryOptionPrice,
-                    firstLotExitPrice = firstLotExitPrice,
-                    secondLotExitPrice = raw.exitOptionPrice,
-                    firstLotPnl = firstLotPnl,
-                    secondLotPnl = secondLotPnl,
-                    totalTradePnl = totalTradePnl,
-                    cumulativePnl = runningCumPnl,
-                    cumulativeRupees = runningCumPnl * lotSize
-                )
-            )
-        }
-
-        val winRate = if (tradesForTarget.isNotEmpty()) (wins.toDouble() / tradesForTarget.size) * 100 else 0.0
-        val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
-        val netPnlPts = runningCumPnl
-        val netPnlRupees = netPnlPts * lotSize
-
-        optimizationResults.add(
-            OptimizationResult(
-                strategyName = "Fixed Target",
-                parameterValue = target,
-                winRate = winRate,
-                grossProfit = gProfit,
-                grossLoss = gLoss,
-                profitFactor = profitFactor,
-                netPnlPts = netPnlPts,
-                netPnlRupees = netPnlRupees,
-                maxDrawdownPts = maxDD,
-                maxDrawdownRupees = maxDD * lotSize,
-                completedTrades = tradesForTarget
-            )
-        )
-    }
-
-    // 3. Test ATR Trailing Stop Strategies
-    val atrMultipliers = listOf(1.0, 1.5, 2.0, 2.5, 3.0)
-    for (multiplier in atrMultipliers) {
-        val tradesForAtr = mutableListOf<OptionTradeResult>()
-        var runningCumPnl = 0.0
-        var peak = 0.0
-        var maxDD = 0.0
-        var wins = 0
-        var losses = 0
-        var gProfit = 0.0
-        var gLoss = 0.0
-
-        for ((idx, raw) in rawTrades.withIndex()) {
-            val highs = raw.tradeCandles.map { it.high }
-            val lows = raw.tradeCandles.map { it.low }
-            val closes = raw.tradeCandles.map { it.close }
-            val atrList = TechnicalIndicators.calculateAtr(highs, lows, closes, 14)
-            val entryAtr = if (atrList.isNotEmpty()) atrList.last() else 15.0
-            val buffer = multiplier * entryAtr
-
-            var runningPeak = raw.entryOptionPrice
-            var firstLotExitPrice = raw.entryOptionPrice
-            for (c in raw.tradeCandles) {
-                if (c.high > runningPeak) runningPeak = c.high
-                val triggerPrice = runningPeak - buffer
-                if (c.low <= triggerPrice && triggerPrice > raw.entryOptionPrice) {
-                    firstLotExitPrice = triggerPrice
-                    break
-                }
-            }
-            if (firstLotExitPrice <= raw.entryOptionPrice) {
-                firstLotExitPrice = runningPeak
-            }
-
-            val firstLotPnl = firstLotExitPrice - raw.entryOptionPrice
-            val secondLotPnl = raw.exitOptionPrice - raw.entryOptionPrice
-            val totalTradePnl = firstLotPnl + secondLotPnl
-            runningCumPnl += totalTradePnl
-
-            if (runningCumPnl > peak) peak = runningCumPnl
-            val dd = peak - runningCumPnl
-            if (dd > maxDD) maxDD = dd
-
-            if (totalTradePnl > 0) {
-                wins++
-                gProfit += totalTradePnl
-            } else if (totalTradePnl < 0) {
-                losses++
-                gLoss += kotlin.math.abs(totalTradePnl)
-            }
-
-            tradesForAtr.add(
-                OptionTradeResult(
-                    tradeNo = idx + 1,
-                    direction = raw.direction,
-                    entryTime = raw.entryTime,
-                    exitTime = raw.exitTime,
-                    derivativeSymbol = raw.derivativeSymbol,
-                    entryOptionPrice = raw.entryOptionPrice,
-                    firstLotExitPrice = firstLotExitPrice,
-                    secondLotExitPrice = raw.exitOptionPrice,
-                    firstLotPnl = firstLotPnl,
-                    secondLotPnl = secondLotPnl,
-                    totalTradePnl = totalTradePnl,
-                    cumulativePnl = runningCumPnl,
-                    cumulativeRupees = runningCumPnl * lotSize
-                )
-            )
-        }
-
-        val winRate = if (tradesForAtr.isNotEmpty()) (wins.toDouble() / tradesForAtr.size) * 100 else 0.0
-        val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
-        val netPnlPts = runningCumPnl
-        val netPnlRupees = netPnlPts * lotSize
-
-        optimizationResults.add(
-            OptimizationResult(
-                strategyName = "ATR Trailing",
-                parameterValue = multiplier,
-                winRate = winRate,
-                grossProfit = gProfit,
-                grossLoss = gLoss,
-                profitFactor = profitFactor,
-                netPnlPts = netPnlPts,
-                netPnlRupees = netPnlRupees,
-                maxDrawdownPts = maxDD,
-                maxDrawdownRupees = maxDD * lotSize,
-                completedTrades = tradesForAtr
-            )
-        )
-    }
-
-    // Print Optimizer Comparative Summary Table
-    println("\n======================================================================================================================================")
-    println("1ST LOT EXIT STRATEGY & PARAMETER OPTIMIZER REPORT (Trailing Peak vs. Fixed Target vs. ATR Trailing | 1 Lot = 65 Qty)")
-    println("======================================================================================================================================")
-    println("| Strategy Type   | Parameter Value | Win Rate | Gross Profit | Gross Loss | Profit Factor | Net P&L (Pts) | Net P&L (INR) | Max Drawdown |")
-    println("|-----------------|-----------------|----------|--------------|------------|---------------|---------------+---------------+--------------|")
-
-    for (res in optimizationResults) {
-        val pfStr = if (res.profitFactor > 900) "999.0+" else String.format("%.2f", res.profitFactor)
-        val paramStr = when (res.strategyName) {
-            "Trailing Peak" -> "Buffer: ${res.parameterValue.toInt()} pts"
-            "Fixed Target" -> "Target: ${res.parameterValue.toInt()} pts"
-            else -> "ATR Mult: ${String.format("%.1f", res.parameterValue)}x"
-        }
-        println("| ${res.strategyName.padEnd(15)} | ${paramStr.padEnd(15)} | ${String.format("%.1f", res.winRate)}%    | ${String.format("%.2f", res.grossProfit)} pts | ${String.format("%.2f", res.grossLoss)} pts | $pfStr           | ${String.format("%.2f", res.netPnlPts)} pts   | ₹${String.format("%,.2f", res.netPnlRupees)} | ${String.format("%.2f", res.maxDrawdownPts)} pts |")
-    }
-    println("======================================================================================================================================")
-
-    // Select Best Resulting Strategy & Parameter (highest Net P&L in INR, tie-breaker Profit Factor)
-    val bestResult = optimizationResults.maxWithOrNull(compareBy<OptimizationResult> { it.netPnlRupees }.thenBy { it.profitFactor })
-        ?: optimizationResults.first()
-
-    val optimalParamDesc = when (bestResult.strategyName) {
-        "Trailing Peak" -> "Buffer: ${bestResult.parameterValue.toInt()} pts"
-        "Fixed Target" -> "Target: ${bestResult.parameterValue.toInt()} pts"
-        else -> "ATR Mult: ${String.format("%.1f", bestResult.parameterValue)}x"
-    }
-
-    println("\n🏆 ABSOLUTE BEST 1ST LOT EXIT STRATEGY FOUND:")
-    println("• Strategy Type         : ${bestResult.strategyName}")
-    println("• Optimal Parameter     : $optimalParamDesc")
-    println("• Optimal Win Rate      : ${String.format("%.1f", bestResult.winRate)}%")
-    println("• Optimal Profit Factor : ${String.format("%.2f", bestResult.profitFactor)}")
-    println("• Optimal Net P&L (INR) : ₹${String.format("%,.2f", bestResult.netPnlRupees)}")
-    println("• Optimal Max Drawdown  : ${String.format("%.2f", bestResult.maxDrawdownPts)} pts (₹${String.format("%,.2f", bestResult.maxDrawdownRupees)})")
-    println("========================================================================================================================\n")
-
-    val completedTrades = bestResult.completedTrades
-
-    // Print detailed 2-lot trade report with 1st lot exit at optimal strategy, 2nd lot exit at actual exit, and cumulative P&L in points and money
-    println("\n========================================================================================================================================================================")
-    println("DETAILED 2-LOT OPTION BACKTEST REPORT (${bestResult.strategyName} | $optimalParamDesc | 1 Lot = 65 Qty)")
-    println("========================================================================================================================================================================")
+    // Print detailed trade report
+    println("\n========================================================================================================================================================")
+    println("DETAILED OPTION BACKTEST REPORT (Pure EMA 11 Strategy Exit | 1 Lot = 65 Qty)")
+    println("========================================================================================================================================================")
     
     if (completedTrades.isEmpty()) {
         println("⚠️ NO TRADES EXECUTED: The strategy did not trigger any entry signals during the specified date range.")
     } else {
-        println("| # | Signal | Entry Time | Exit Time | Derivative Symbol | Entry | 1st Lot Exit | 2nd Lot Exit | 1st P&L | 2nd P&L | Trade P&L | Cum. P&L (Pts) | Cum. P&L (₹) |")
-        println("|---|--------|------------|-----------|-------------------|-------|--------------|--------------|---------|---------|-----------|----------------|--------------|")
+        println("| # | Signal | Entry Time | Exit Time | Derivative Symbol | Entry | Exit | P&L (Pts) | P&L (₹) | Cum. P&L (Pts) | Cum. P&L (₹) |")
+        println("|---|--------|------------|-----------|-------------------|-------|------|-----------|---------|----------------|--------------|")
     }
 
     var peak = 0.0
@@ -711,54 +387,44 @@ suspend fun runDerivativeBacktestForRange(
     var losses = 0
     var gProfit = 0.0
     var gLoss = 0.0
-    var totalFirstLotPnl = 0.0
-    var totalSecondLotPnl = 0.0
 
     for (t in completedTrades) {
-        totalFirstLotPnl += t.firstLotPnl
-        totalSecondLotPnl += t.secondLotPnl
-
         if (t.cumulativePnl > peak) peak = t.cumulativePnl
         val dd = peak - t.cumulativePnl
         if (dd > maxDD) maxDD = dd
 
-        if (t.totalTradePnl > 0) {
+        if (t.pnl > 0) {
             wins++
-            gProfit += t.totalTradePnl
-        } else if (t.totalTradePnl < 0) {
+            gProfit += t.pnl
+        } else if (t.pnl < 0) {
             losses++
-            gLoss += kotlin.math.abs(t.totalTradePnl)
+            gLoss += kotlin.math.abs(t.pnl)
         }
 
-        val sign1 = if (t.firstLotPnl >= 0) "[WIN +]" else "[LOSS -]"
-        val sign2 = if (t.secondLotPnl >= 0) "[WIN +]" else "[LOSS -]"
-        val signTrade = if (t.totalTradePnl >= 0) "[WIN +]" else "[LOSS -]"
+        val sign = if (t.pnl >= 0) "[WIN +]" else "[LOSS -]"
         val signCumPts = if (t.cumulativePnl >= 0) "[+]" else "[-]"
         val signCumRs = if (t.cumulativeRupees >= 0) "[+]" else "[-]"
 
-        println("| ${t.tradeNo} | ${t.direction} | ${t.entryTime} | ${t.exitTime} | ${t.derivativeSymbol} | ${String.format("%.2f", t.entryOptionPrice)} | ${String.format("%.2f", t.firstLotExitPrice)} | ${String.format("%.2f", t.secondLotExitPrice)} | $sign1 ${String.format("%.2f", t.firstLotPnl)} | $sign2 ${String.format("%.2f", t.secondLotPnl)} | $signTrade ${String.format("%.2f", t.totalTradePnl)} | $signCumPts ${String.format("%.2f", t.cumulativePnl)} pts | $signCumRs ₹${String.format("%,.2f", t.cumulativeRupees)} |")
+        println("| ${t.tradeNo} | ${t.direction} | ${t.entryTime} | ${t.exitTime} | ${t.derivativeSymbol} | ${String.format("%.2f", t.entryOptionPrice)} | ${String.format("%.2f", t.exitOptionPrice)} | $sign ${String.format("%.2f", t.pnl)} pts | ₹${String.format("%,.2f", t.pnl * lotSize)} | $signCumPts ${String.format("%.2f", t.cumulativePnl)} pts | $signCumRs ₹${String.format("%,.2f", t.cumulativeRupees)} |")
     }
 
-    val combinedStrategyRupees = (totalFirstLotPnl + totalSecondLotPnl) * lotSize
+    val totalNetPnlRupees = runningCumulativePnl * lotSize
     val peakRupees = peak * lotSize
     val maxDdRupees = maxDD * lotSize
     val winRate = if (completedTrades.isNotEmpty()) (wins.toDouble() / completedTrades.size) * 100 else 0.0
     val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
 
-    println("========================================================================================================================================================================")
-    println("2-LOT STRATEGY PERFORMANCE & EXECUTION SUMMARY (1 Lot = 65 Qty | 2 Lots Total = 130 Qty):")
+    println("========================================================================================================================================================")
+    println("STRATEGY PERFORMANCE & EXECUTION SUMMARY (1 Lot = 65 Qty):")
     println("• Total Trades Executed           : ${completedTrades.size}")
     println("• Winning Trades (Net > 0)        : $wins W | Losing Trades (Net < 0): $losses L (Win Rate: ${String.format("%.1f", winRate)}%)")
     println("• Gross Profit                    : ${String.format("%.2f", gProfit)} pts | Gross Loss: ${String.format("%.2f", gLoss)} pts")
     println("• Profit Factor                   : ${String.format("%.2f", profitFactor)}")
-    println("• Total 1st Lot P&L (Exited Peak) : ${String.format("%.2f", totalFirstLotPnl)} points")
-    println("• Total 2nd Lot P&L (Exited Exit) : ${String.format("%.2f", totalSecondLotPnl)} points")
-    println("• Combined Net Strategy P&L (Pts) : ${String.format("%.2f", totalFirstLotPnl + totalSecondLotPnl)} points")
-    println("• Combined Net Strategy P&L (INR) : ₹${String.format("%,.2f", combinedStrategyRupees)}")
+    println("• Net Strategy P&L (Pts)          : ${String.format("%.2f", runningCumulativePnl)} points")
+    println("• Net Strategy P&L (INR)          : ₹${String.format("%,.2f", totalNetPnlRupees)}")
     println("• Peak Cumulative P&L           : ${String.format("%.2f", peak)} points (₹${String.format("%,.2f", peakRupees)})")
     println("• Max Drawdown                  : [DD] ${String.format("%.2f", maxDD)} points (₹${String.format("%,.2f", maxDdRupees)})")
-    println("========================================================================================================================================================================")
+    println("========================================================================================================================================================")
     System.out.flush()
-    println()
     println()
 }
