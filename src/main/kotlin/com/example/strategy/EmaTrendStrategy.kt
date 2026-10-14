@@ -40,7 +40,9 @@ data class IndicatorCandle(
     val longSetup: Boolean,
     val shortSetup: Boolean,
     val longExit: Boolean,
-    val shortExit: Boolean
+    val shortExit: Boolean,
+    val chandelierLongStop: Double = 0.0,
+    val chandelierShortStop: Double = 0.0
 )
 
 data class EmaTrendConfig(
@@ -50,11 +52,16 @@ data class EmaTrendConfig(
     val atrPeriod: Int = 14,
     val adxPeriod: Int = 14,
     val slopeLookback: Int = 3,
+//    val adxThreshold: Double = 50.0,
     val adxThreshold: Double = 20.0,
     val distanceAtrMultiplier: Double = 0.5,
     val ema11SlopeAtrMultiplier: Double = 0.3,
     val ema18SlopeAtrMultiplier: Double = 0.2,
-    val fullBodyMinRatio: Double = 0.5
+    val fullBodyMinRatio: Double = 0.5,
+    // Chandelier Exit Trailing SL configuration
+    val useChandelierExit: Boolean = true,
+    val chandelierPeriod: Int = 22,
+    val chandelierMultiplier: Double = 3.0
 ) {
     init {
         require(emaFastPeriod < emaMidPeriod && emaMidPeriod < emaSlowPeriod) {
@@ -69,7 +76,8 @@ data class EmaTrendConfig(
 data class EmaTrendPositionContext(
     val direction: String, // "LONG" or "SHORT"
     val entryUnderlying: Double,
-    val stopUnderlying: Double = 0.0
+    val stopUnderlying: Double = 0.0,
+    val peakUnderlying: Double = 0.0
 )
 
 data class EmaTrendDecision(
@@ -77,7 +85,8 @@ data class EmaTrendDecision(
     val entryUnderlying: Double = 0.0,
     val stopUnderlying: Double = 0.0,
     val exitReason: String = "",
-    val signalTriggered: Boolean = false
+    val signalTriggered: Boolean = false,
+    val updatedStopUnderlying: Double = 0.0
 )
 
 data class TradeRecord(
@@ -111,31 +120,71 @@ class EmaTrendSignalEngine(private val config: EmaTrendConfig = EmaTrendConfig()
         // 1. If position is open, check exit conditions first
         if (position != null) {
             val direction = position.direction.trim().uppercase()
-            if (direction == "LONG" && current.low < current.ema11) {
-                return EmaTrendDecision(action = "EXIT", exitReason = "EMA11_EXIT")
-            }
-            if (direction == "SHORT" && current.high > current.ema11) {
-                return EmaTrendDecision(action = "EXIT", exitReason = "EMA11_EXIT")
+            if (config.useChandelierExit) {
+                if (direction == "LONG") {
+                    val prevStop = if (position.stopUnderlying == 0.0) current.chandelierLongStop else position.stopUnderlying
+                    val newStop = max(prevStop, current.chandelierLongStop)
+                    if (current.low < newStop) {
+                        return EmaTrendDecision(
+                            action = "EXIT",
+                            exitReason = "CHANDELIER_EXIT",
+                            stopUnderlying = newStop,
+                            updatedStopUnderlying = newStop
+                        )
+                    }
+                    return EmaTrendDecision(
+                        action = "HOLD",
+                        stopUnderlying = newStop,
+                        updatedStopUnderlying = newStop
+                    )
+                } else if (direction == "SHORT") {
+                    val prevStop = if (position.stopUnderlying == 0.0) current.chandelierShortStop else position.stopUnderlying
+                    val newStop = min(prevStop, current.chandelierShortStop)
+                    if (current.high > newStop) {
+                        return EmaTrendDecision(
+                            action = "EXIT",
+                            exitReason = "CHANDELIER_EXIT",
+                            stopUnderlying = newStop,
+                            updatedStopUnderlying = newStop
+                        )
+                    }
+                    return EmaTrendDecision(
+                        action = "HOLD",
+                        stopUnderlying = newStop,
+                        updatedStopUnderlying = newStop
+                    )
+                }
+            } else {
+                if (direction == "LONG" && current.low < current.ema11) {
+                    return EmaTrendDecision(action = "EXIT", exitReason = "EMA11_EXIT")
+                }
+                if (direction == "SHORT" && current.high > current.ema11) {
+                    return EmaTrendDecision(action = "EXIT", exitReason = "EMA11_EXIT")
+                }
             }
             return EmaTrendDecision(action = "HOLD")
         }
 
         // 2. If flat, check entry setups
         if (current.longSetup) {
+            val initialStop = if (config.useChandelierExit) current.chandelierLongStop else current.ema11
             return EmaTrendDecision(
                 action = "ENTER_LONG",
                 entryUnderlying = current.close,
-                stopUnderlying = current.ema11,
-                signalTriggered = true
+                stopUnderlying = initialStop,
+                signalTriggered = true,
+                updatedStopUnderlying = initialStop
             )
         }
 
         if (current.shortSetup) {
+            val initialStop = if (config.useChandelierExit) current.chandelierShortStop else current.ema11
             return EmaTrendDecision(
                 action = "ENTER_SHORT",
                 entryUnderlying = current.close,
-                stopUnderlying = current.ema11,
-                signalTriggered = true
+                stopUnderlying = initialStop,
+                signalTriggered = true,
+                updatedStopUnderlying = initialStop
             )
         }
 
@@ -241,6 +290,16 @@ object TechnicalIndicators {
             val ema11DeltaCurr = if (i >= 1) ema11 - ema11s[i - 1] else 0.0
             val ema11DeltaPrev = if (i >= 2) ema11s[i - 1] - ema11s[i - 2] else 0.0
 
+            val chandelierWindowStart = max(0, i - config.chandelierPeriod + 1)
+            var windowHigh = -Double.MAX_VALUE
+            var windowLow = Double.MAX_VALUE
+            for (w in chandelierWindowStart..i) {
+                if (highs[w] > windowHigh) windowHigh = highs[w]
+                if (lows[w] < windowLow) windowLow = lows[w]
+            }
+            val chandelierLongStop = windowHigh - config.chandelierMultiplier * atr
+            val chandelierShortStop = windowLow + config.chandelierMultiplier * atr
+
             val longSetup = (c.close > ema4 && c.close > ema11 && c.close > ema18 &&
                     ema4 > ema11 && ema11 > ema18 &&
                     emaDist > config.distanceAtrMultiplier * atr &&
@@ -293,7 +352,9 @@ object TechnicalIndicators {
                     longSetup = longSetup,
                     shortSetup = shortSetup,
                     longExit = longExit,
-                    shortExit = shortExit
+                    shortExit = shortExit,
+                    chandelierLongStop = chandelierLongStop,
+                    chandelierShortStop = chandelierShortStop
                 )
             )
         }
@@ -341,7 +402,7 @@ class EmaTrendBacktestEngine(private val config: EmaTrendConfig = EmaTrendConfig
                 }
             } else {
                 if (decision.action == "EXIT") {
-                    val exitPrice = indicatorCandles[i].ema11
+                    val exitPrice = if (config.useChandelierExit) decision.stopUnderlying else indicatorCandles[i].ema11
                     currentTrade?.let { trade ->
                         trade.exitIndex = i
                         trade.exitTime = indicatorCandles[i].timestamp
@@ -352,6 +413,8 @@ class EmaTrendBacktestEngine(private val config: EmaTrendConfig = EmaTrendConfig
                     }
                     activePosition = null
                     currentTrade = null
+                } else {
+                    activePosition = activePosition.copy(stopUnderlying = decision.updatedStopUnderlying)
                 }
             }
         }

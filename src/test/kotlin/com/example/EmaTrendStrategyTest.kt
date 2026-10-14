@@ -46,4 +46,32 @@ class EmaTrendStrategyTest {
         val engine = EmaTrendSignalEngine(config)
         assertTrue(engine.minimumHistoryBars() > 0)
     }
+
+    @Test
+    fun testChandelierExitBacktest() {
+        val candles = mutableListOf<Candle>()
+        var price = 20000.0
+        for (i in 0..100) {
+            price += 10.0
+            candles.add(
+                Candle(
+                    timestamp = "2026-10-01 09:${String.format("%02d", i % 60)}",
+                    open = price - 2.0,
+                    high = price + 10.0,
+                    low = price - 5.0,
+                    close = price + 5.0,
+                    volume = 50000.0
+                )
+            )
+        }
+
+        val config = EmaTrendConfig(
+            useChandelierExit = true,
+            chandelierPeriod = 10,
+            chandelierMultiplier = 3.0
+        )
+        val backtestEngine = EmaTrendBacktestEngine(config)
+        val trades = backtestEngine.runBacktest(candles)
+        assertNotNull(trades)
+    }
 }
