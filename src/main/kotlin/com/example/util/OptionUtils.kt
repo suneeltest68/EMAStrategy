@@ -220,10 +220,8 @@ object OptionUtils {
         val strikeInterval = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true) || indexSymbol.contains("SENSEX", ignoreCase = true)) 100 else 50
         val atmStrike = calculateAtmStrike(spotPrice, strikeInterval)
 
-        val rangeFrom = LocalDate.parse(tradeDate).minusMonths(1).toString()
-        val yesterday = LocalDate.now().minusDays(1)
-        val rawRangeTo = LocalDate.parse(tradeDate).plusDays(7)
-        val rangeTo = if (rawRangeTo.isAfter(yesterday)) yesterday.toString() else rawRangeTo.toString()
+        val rangeFrom = LocalDate.parse(tradeDate).minusDays(15).toString()
+        val rangeTo = LocalDate.parse(tradeDate).plusDays(15).toString()
         val expiryCacheKey = "$indexSymbol-$rangeFrom-$rangeTo"
 
         var expiryJson = expiryCache[expiryCacheKey]

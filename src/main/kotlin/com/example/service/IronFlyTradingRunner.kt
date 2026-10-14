@@ -254,12 +254,12 @@ class IronFlyTradingRunner(
                         val totalMtm = (cePnl + buyCePnl + pePnl + buyPePnl) * lotSize // Lot multiplier
                         val targetProfit = activePos.deployedCapital * 0.01
 
-                        if (totalMtm >= targetProfit) {
+                        /*if (totalMtm >= targetProfit) {
                             val tpMsg = "💰 [IronFly PROFIT TARGET HIT] MTM Profit: ${String.format("%.2f", totalMtm)} >= Target (${String.format("%.2f", targetProfit)}). Exiting all legs!"
                             println(tpMsg)
                             TelegramNotifier.sendAlert(tpMsg)
                             break
-                        }
+                        }*/
 
                         // If all sold legs are closed, exit
                         if (activePos.soldCe.isClosed && activePos.soldPe.isClosed) {
