@@ -92,14 +92,16 @@ class FyersRepository {
         }
     }
 
-    fun getHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String): Result<JSONObject> {
+    fun getHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String,isForLiveTrading: Boolean = false): Result<JSONObject> {
         val isIndex = symbol.contains("INDEX", ignoreCase = true) || symbol.contains("NIFTY50", ignoreCase = true) || symbol.contains("BANKNIFTY", ignoreCase = true) || symbol.contains("SENSEX", ignoreCase = true)
         val targetFile = if (isIndex) indexCacheFile else derivativesCacheFile
         val cacheKey = "history_${symbol}_${resolution}_${rangeFrom}_${rangeTo}"
 
-        val cached = readFromConsolidatedCache(targetFile, cacheKey)
-        if (cached != null) {
-            return Result.success(cached)
+        if (!isForLiveTrading) {
+            val cached = readFromConsolidatedCache(targetFile, cacheKey)
+            if (cached != null) {
+                return Result.success(cached)
+            }
         }
 
         return try {

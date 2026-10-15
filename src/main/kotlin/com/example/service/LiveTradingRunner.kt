@@ -148,13 +148,14 @@ class LiveTradingRunner(
                     continue
                 }
 
-                val latestHistory = viewModel.fetchHistoricalData(appId, token, "NSE:NIFTY50-INDEX", "1", warmupFrom, currentDate)
+                val latestHistory = viewModel.fetchHistoricalData(appId, token, "NSE:NIFTY50-INDEX", "1", warmupFrom, currentDate, isForLiveTrading = true)
                 if (latestHistory != null) {
                     val freshCandles = parseFyersCandles(latestHistory)
                     if (freshCandles.isNotEmpty()) {
                         val completedCandles = if (freshCandles.size > 1) freshCandles.dropLast(1) else freshCandles
                         val indicatorCandles = TechnicalIndicators.buildIndicators(completedCandles, config)
                         val lastIc = indicatorCandles.last()
+                        print("Last Candle" +lastIc)
                         val timePart = lastIc.timestamp.substring(11, 16)
 
                         println("[Live Status] Check at ${lastIc.timestamp} | Nifty Close: ${lastIc.close} | EMA4: ${String.format("%.2f", lastIc.ema4)} | EMA11: ${String.format("%.2f", lastIc.ema11)} | EMA18: ${String.format("%.2f", lastIc.ema18)} | Position: ${activePosition?.direction ?: "FLAT"}")
@@ -235,7 +236,7 @@ class LiveTradingRunner(
 
         // Target 1 second past the next 1-minute mark (e.g., 09:15:01, 09:16:01, 09:17:01)
         val target = if (now.second < 1) {
-            now.withSecond(1).withNano(0)
+            now.withSecond(3).withNano(0)
         } else {
             now.plusMinutes(1).withSecond(1).withNano(0)
         }

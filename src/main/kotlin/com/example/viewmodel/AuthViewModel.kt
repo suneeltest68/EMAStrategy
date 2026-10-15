@@ -37,9 +37,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         )
     }
 
-    suspend fun fetchHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String): JSONObject? {
+    suspend fun fetchHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String,isForLiveTrading: Boolean = false): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, rangeFrom, rangeTo)
+            val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, rangeFrom, rangeTo,isForLiveTrading=isForLiveTrading)
             if (result.isFailure) {
                 println("Historical Data Error for $symbol: ${result.exceptionOrNull()?.message}")
             }
