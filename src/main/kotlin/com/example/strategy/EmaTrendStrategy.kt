@@ -59,7 +59,7 @@ data class EmaTrendConfig(
     val ema18SlopeAtrMultiplier: Double = 0.2,
     val fullBodyMinRatio: Double = 0.5,
     // Chandelier Exit Trailing SL configuration
-    val useChandelierExit: Boolean = true,
+    val useChandelierExit: Boolean = false,
     val chandelierPeriod: Int = 22,
     val chandelierMultiplier: Double = 3.0
 ) {
