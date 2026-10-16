@@ -18,14 +18,10 @@ package com.example
 import com.example.viewmodel.AuthViewModel
 import com.example.service.LiveTradingRunner
 import com.example.service.TelegramNotifier
-import com.example.service.TradingJournalService
 import com.sun.net.httpserver.HttpServer
 import io.github.cdimascio.dotenv.dotenv
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.File
@@ -75,13 +71,7 @@ fun main() = runBlocking {
         val path = exchange.requestURI.path?.removeSuffix("/") ?: ""
         try {
             if (path == "/api/journal" || path == "/journal") {
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        val report = TradingJournalService.getJournalReport()
-                        TelegramNotifier.sendAlert("🔔 [Cron Ping / Journal Accessed]\n$report")
-                    } catch (_: Exception) {}
-                }
-
+                // Telegram alert on journal hit removed to prevent 5-minute cron ping spam
                 val file = File("trading_journal.json")
                 val jsonStr = if (file.exists()) file.readText() else "{\"trades\":[],\"stats\":{}}"
                 exchange.responseHeaders.set("Content-Type", "application/json; charset=UTF-8")
