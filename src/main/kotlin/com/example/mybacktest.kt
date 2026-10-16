@@ -100,8 +100,8 @@ fun main() {
  * Fetches NIFTY index data, runs strategy signals, and resolves weekly options.
  */
 suspend fun fetchDataAndRunDerivativeBacktest(viewModel: AuthViewModel, appId: String, token: String) {
-    val rangeStart = "2026-01-01"
-    val rangeEnd = "2026-09-30"
+    val rangeStart = "2026-02-01"
+    val rangeEnd = "2026-02-28"
     val rangeFrom = java.time.LocalDate.parse(rangeStart).minusWeeks(1).toString()
     val indexSymbol = "NSE:NIFTY50-INDEX"
 
@@ -178,9 +178,7 @@ suspend fun fetchDerivativeCandles(
 }
 
 /**
- * Executes the 2-Lot Scale-Out Option Backtest:
- * - Lot 1: Books profit at +15 pts option gain (moves Lot 2 stop to breakeven).
- * - Lot 2: Rides trend runner to strategy exit or EOD 15:20 square-off.
+ * Executes the Option Backtest (Supports 1-Lot or 2-Lot Scale-Out via useTwoLots boolean).
  */
 suspend fun runDerivativeBacktestForRange(
     viewModel: AuthViewModel,
@@ -189,11 +187,17 @@ suspend fun runDerivativeBacktestForRange(
     candles: List<Candle>,
     startDate: String,
     endDate: String,
-    indexSymbol: String = "NSE:NIFTY50-INDEX"
+    indexSymbol: String = "NSE:NIFTY50-INDEX",
+    useTwoLots: Boolean = false
 ) {
     println("\n==============================================================")
-    println("EXECUTING 2-LOT SCALE-OUT OPTION BACKTEST ($startDate to $endDate)")
-    println("Parent: $indexSymbol | Lot 1 Target: +15 pts (Move SL to BE) | Lot 2 Runner")
+    if (useTwoLots) {
+        println("EXECUTING 2-LOT SCALE-OUT OPTION BACKTEST ($startDate to $endDate)")
+        println("Parent: $indexSymbol | Lot 1 Target: +15 pts (Move SL to BE) | Lot 2 Runner")
+    } else {
+        println("EXECUTING 1-LOT OPTION BACKTEST ($startDate to $endDate)")
+        println("Parent: $indexSymbol | Single Lot (No Scale-Out)")
+    }
     println("==============================================================\n")
 
     val config = EmaTrendConfig(
@@ -337,16 +341,16 @@ suspend fun runDerivativeBacktestForRange(
                 tradeCount++
                 currentTradeNo = tradeCount
                 lot1Active = true
-                lot2Active = true
+                lot2Active = useTwoLots
             }
         } else {
-            // Check derivative price for Lot 1 target (+15 pts option gain)
+            // Check derivative price for Lot 1 target (+15 pts option gain) if useTwoLots is enabled
             val currentDerivativeBar = derivativeCandles.firstOrNull { it.timestamp >= ic.timestamp } ?: derivativeCandles.lastOrNull()
             val currentOptionPrice = currentDerivativeBar?.close ?: entryOptionPrice
             val optionProfitPts = currentOptionPrice - entryOptionPrice
 
-            // Check Lot 1 target (+15 pts)
-            if (lot1Active && optionProfitPts >= 15.0) {
+            // Check Lot 1 target (+15 pts) only when useTwoLots is true
+            if (useTwoLots && lot1Active && optionProfitPts >= 15.0) {
                 runningCumulativePnl += optionProfitPts
                 completedTrades.add(
                     OptionTradeResult(
@@ -366,10 +370,10 @@ suspend fun runDerivativeBacktestForRange(
                 println("🎯 [Lot 1 Booked] +15 pts locked in for $derivativeSymbol at ${ic.timestamp}")
             }
 
-            // Check Stop Loss on Lot 2 (-25 pts underlying drawdown or breakeven)
+            // Check Stop Loss on Lot 2 / Single Lot (-25 pts underlying drawdown or breakeven)
             val spotDiff = if (activePosition.direction == "LONG") ic.close - activePosition.entryUnderlying else activePosition.entryUnderlying - ic.close
             val isStopLossHit = spotDiff <= -25.0
-            val isBreakevenHit = !lot1Active && optionProfitPts <= 0.0 // Breakeven stop after Lot 1 booked
+            val isBreakevenHit = useTwoLots && !lot1Active && optionProfitPts <= 0.0 // Breakeven stop after Lot 1 booked
 
             val isSquareOff = timePart >= "15:20"
             if (decision.action == "EXIT" || isSquareOff || isStopLossHit || isBreakevenHit) {
@@ -382,10 +386,11 @@ suspend fun runDerivativeBacktestForRange(
                         isSquareOff -> "EOD_SQUARE_OFF"
                         else -> "STRATEGY_EXIT"
                     }
+                    val tradeDirection = if (useTwoLots) "${activePosition.direction} [Lot 1 ($reason)]" else "${activePosition.direction} [$reason]"
                     completedTrades.add(
                         OptionTradeResult(
                             tradeNo = currentTradeNo,
-                            direction = "${activePosition.direction} [Lot 1 ($reason)]",
+                            direction = tradeDirection,
                             entryTime = entryTime,
                             exitTime = ic.timestamp,
                             derivativeSymbol = derivativeSymbol,
@@ -434,7 +439,11 @@ suspend fun runDerivativeBacktestForRange(
 
     // Print detailed trade report using clean box-drawing table
     println("\n========================================================================================================================================================")
-    println("DETAILED 2-LOT SCALE-OUT OPTION BACKTEST REPORT (Lot 1 Target +15pts | Lot 2 Runner)")
+    if (useTwoLots) {
+        println("DETAILED 2-LOT SCALE-OUT OPTION BACKTEST REPORT (Lot 1 Target +15pts | Lot 2 Runner)")
+    } else {
+        println("DETAILED 1-LOT OPTION BACKTEST REPORT")
+    }
     println("========================================================================================================================================================")
 
     if (completedTrades.isEmpty()) {
@@ -471,7 +480,11 @@ suspend fun runDerivativeBacktestForRange(
     val profitFactor = if (gLoss > 0) gProfit / gLoss else if (gProfit > 0) 999.0 else 0.0
 
     println("========================================================================================================================================================")
-    println("STRATEGY PERFORMANCE & EXECUTION SUMMARY (2 Lots = 130 Qty):")
+    if (useTwoLots) {
+        println("STRATEGY PERFORMANCE & EXECUTION SUMMARY (2 Lots = 130 Qty):")
+    } else {
+        println("STRATEGY PERFORMANCE & EXECUTION SUMMARY (1 Lot = 65 Qty):")
+    }
     println("• Total Legs Executed             : ${completedTrades.size}")
     println("• Winning Legs (Net > 0)          : $wins W | Losing Legs (Net < 0): $losses L (Win Rate: ${String.format("%.1f", winRate)}%)")
     println("• Gross Profit                    : ${String.format("%.2f", gProfit)} pts | Gross Loss: ${String.format("%.2f", gLoss)} pts")

@@ -130,7 +130,7 @@ class LiveTradingRunner(
 
                 val marketOpen = LocalTime.of(9, 16)
                 val marketClose = LocalTime.of(15, 30)
-                val squareOffTime = LocalTime.of(15, 25)
+                val squareOffTime = LocalTime.of(15, 15)
 
                 if (currentTime.isBefore(marketOpen)) {
                     println("[Market Closed] Waiting for market open at 09:15 AM...")
@@ -160,17 +160,44 @@ class LiveTradingRunner(
 
                         println("[Live Status] Check at ${lastIc.timestamp} | Nifty Close: ${lastIc.close} | EMA4: ${String.format("%.2f", lastIc.ema4)} | EMA11: ${String.format("%.2f", lastIc.ema11)} | EMA18: ${String.format("%.2f", lastIc.ema18)} | Position: ${activePosition?.direction ?: "FLAT"}")
 
-                        if (activePosition != null && (currentTime.isAfter(squareOffTime) || currentTime == squareOffTime || lastIc.timestamp.substring(0, 10) > entryDate)) {
-                            val exitTime = "$entryDate 15:25"
-                            val exitBar = derivativeCandles.firstOrNull { it.timestamp >= exitTime } ?: derivativeCandles.lastOrNull()
-                            if (exitBar != null) {
-                                val pnl = exitBar.close - entryOptionPrice
-                                totalOptionPnl += pnl
-                                val msg = "🔴 [AUTO SQUARE-OFF] Trade #$tradeCount exited at ${exitBar.timestamp} | PnL: ${String.format("%.2f", pnl)} pts"
-                                println(msg)
-                                TelegramNotifier.sendAlert(msg)
-                                TradingJournalService.logTrade(TradeJournalEntry(derivativeSymbol, entryOptionPrice, exitBar.close, 1, pnl, "AUTO_SQUARE_OFF"))
-                            }
+                        // Square off active trades at 3:15 PM (15:15)
+                        if (activePosition != null && (timePart >= "15:15" || currentTime.isAfter(squareOffTime) || currentTime == squareOffTime)) {
+                            val liveQuotes = viewModel.fetchStockQuotes(appId, token, derivativeSymbol)
+                            val liveLtp = liveQuotes?.let { OptionUtils.extractLtpFromQuotes(it, derivativeSymbol) } ?: entryOptionPrice
+                            val exitOptionPrice = liveLtp
+                            val pnl = recordTrade(tradeCount, activePosition.direction, entryTime, lastIc.timestamp, derivativeSymbol, entryOptionPrice, exitOptionPrice, mutableListOf())
+                            totalOptionPnl += pnl
+
+                            val instrument = formatInstrumentName(derivativeSymbol)
+                            val rupeesPnl = pnl * 65.0
+                            val pnlSignStr = if (rupeesPnl >= 0) "+₹${String.format("%,.2f", rupeesPnl)}" else "-₹${String.format("%,.2f", kotlin.math.abs(rupeesPnl))}"
+                            val exitMsg = """
+                                🏁 EXIT · EMA (AUTO_SQUARE_OFF_3:15)
+                                Direction: ${activePosition.direction}
+                                Instrument: SELL $instrument
+                                  Entry: ₹${String.format("%.2f", entryOptionPrice)} → Exit: ₹${String.format("%.2f", exitOptionPrice)}
+                                Qty: 65 (lot size 65)
+                                ⚪ P&L: $pnlSignStr
+                                [PAPER] ${lastIc.timestamp} IST
+                            """.trimIndent()
+                            println(exitMsg)
+                            TelegramNotifier.sendAlert(exitMsg)
+
+                            TradingJournalService.logTrade(TradeJournalEntry(derivativeSymbol, entryOptionPrice, exitOptionPrice, 1, pnl, "AUTO_SQUARE_OFF_3:15"))
+
+                            // Send End-of-Day P&L Summary
+                            val totalRupees = totalOptionPnl * 65.0
+                            val totalRupeesStr = if (totalRupees >= 0) "+₹${String.format("%,.2f", totalRupees)}" else "-₹${String.format("%,.2f", kotlin.math.abs(totalRupees))}"
+                            val nowStr = LocalDateTime.now(istZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                            val eodMsg = """
+                                📊 End-of-Day P&L [PAPER]
+                                $nowStr IST
+                                EMA [PAPER]: $totalRupeesStr ($tradeCount trade(s))
+                                ──────────
+                                Total: $totalRupeesStr ($tradeCount trade(s))
+                            """.trimIndent()
+                            TelegramNotifier.sendAlert(eodMsg)
+
                             activePosition = null
                             derivativeCandles = emptyList()
                         }
@@ -180,10 +207,10 @@ class LiveTradingRunner(
 
                         val msg = "🔔 [ Current Signal ${decision.action} | Derivative: $derivativeSymbol"
                         println(msg)
-//                        TelegramNotifier.sendAlert(msg)
 
                         if (activePosition == null) {
-                            if (decision.action == "ENTER_LONG" || decision.action == "ENTER_SHORT") {
+                            // Do not enter new trades after 15:15
+                            if ((decision.action == "ENTER_LONG" || decision.action == "ENTER_SHORT") && timePart < "15:15" && currentTime.isBefore(squareOffTime)) {
                                 tradeCount++
                                 val isLong = decision.action == "ENTER_LONG"
                                 val entrySpot = icCloseOrLast(lastIc)
@@ -195,10 +222,6 @@ class LiveTradingRunner(
                                     viewModel, appId, token, "NSE:NIFTY50-INDEX", entrySpot, optionType, expiryIndex
                                 )
 
-                                val msg = "🔔 [LIVE SIGNAL] NIFTY ${if (isLong) "LONG" else "SHORT"} at $entryTime | Derivative: $derivativeSymbol"
-                                println(msg)
-                                TelegramNotifier.sendAlert(msg)
-
                                 val liveQuotes = viewModel.fetchStockQuotes(appId, token, derivativeSymbol)
                                 val liveLtp = liveQuotes?.let { OptionUtils.extractLtpFromQuotes(it, derivativeSymbol) } ?: 0.0
                                 entryOptionPrice = liveLtp
@@ -207,20 +230,62 @@ class LiveTradingRunner(
                                     entryUnderlying = entrySpot,
                                     stopUnderlying = lastIc.ema11
                                 )
+
+                                val instrument = formatInstrumentName(derivativeSymbol)
+                                val entryMsg = """
+                                    🚀 ENTRY · EMA
+                                    Direction: ${if (isLong) "LONG" else "SHORT"}
+                                    Instrument: BUY $instrument
+                                      Entry: ₹${String.format("%.2f", entryOptionPrice)}
+                                    Qty: 65 (1 lot(s) x 65)
+                                    [PAPER] $entryTime IST
+                                """.trimIndent()
+                                println(entryMsg)
+                                TelegramNotifier.sendAlert(entryMsg)
+
                                 println("✅ Position Entered at Live Option Price: $entryOptionPrice")
                             }
                         } else {
-                            val isSquareOff = timePart >= "15:25"
+                            val isSquareOff = timePart >= "15:15"
                             if (decision.action == "EXIT" || isSquareOff) {
                                 val liveQuotes = viewModel.fetchStockQuotes(appId, token, derivativeSymbol)
                                 val liveLtp = liveQuotes?.let { OptionUtils.extractLtpFromQuotes(it, derivativeSymbol) } ?: 0.0
                                 val exitOptionPrice = liveLtp
                                 val pnl = recordTrade(tradeCount, activePosition.direction, entryTime, lastIc.timestamp, derivativeSymbol, entryOptionPrice, exitOptionPrice, mutableListOf())
                                 totalOptionPnl += pnl
-                                val msg = "🏁 [LIVE EXIT] Trade #$tradeCount exited at ${lastIc.timestamp} | Exit Price: $exitOptionPrice | PnL: ${String.format("%.2f", pnl)} pts | Total PnL: ${String.format("%.2f", totalOptionPnl)} pts"
-                                println(msg)
-                                TelegramNotifier.sendAlert(msg)
-                                TradingJournalService.logTrade(TradeJournalEntry(derivativeSymbol, entryOptionPrice, exitOptionPrice, 1, pnl, decision.exitReason.ifEmpty { "SQUARE_OFF" }))
+
+                                val instrument = formatInstrumentName(derivativeSymbol)
+                                val rupeesPnl = pnl * 65.0
+                                val pnlSignStr = if (rupeesPnl >= 0) "+₹${String.format("%,.2f", rupeesPnl)}" else "-₹${String.format("%,.2f", kotlin.math.abs(rupeesPnl))}"
+                                val exitReason = if (isSquareOff) "AUTO_SQUARE_OFF_3:15" else (decision.exitReason.ifEmpty { "EMA11_EXIT" })
+                                val exitMsg = """
+                                    🏁 EXIT · EMA ($exitReason)
+                                    Direction: ${activePosition.direction}
+                                    Instrument: SELL $instrument
+                                      Entry: ₹${String.format("%.2f", entryOptionPrice)} → Exit: ₹${String.format("%.2f", exitOptionPrice)}
+                                    Qty: 65 (lot size 65)
+                                    ⚪ P&L: $pnlSignStr
+                                    [PAPER] ${lastIc.timestamp} IST
+                                """.trimIndent()
+                                println(exitMsg)
+                                TelegramNotifier.sendAlert(exitMsg)
+
+                                TradingJournalService.logTrade(TradeJournalEntry(derivativeSymbol, entryOptionPrice, exitOptionPrice, 1, pnl, exitReason))
+
+                                if (isSquareOff) {
+                                    val totalRupees = totalOptionPnl * 65.0
+                                    val totalRupeesStr = if (totalRupees >= 0) "+₹${String.format("%,.2f", totalRupees)}" else "-₹${String.format("%,.2f", kotlin.math.abs(totalRupees))}"
+                                    val nowStr = LocalDateTime.now(istZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                                    val eodMsg = """
+                                        📊 End-of-Day P&L [PAPER]
+                                        $nowStr IST
+                                        EMA [PAPER]: $totalRupeesStr ($tradeCount trade(s))
+                                        ──────────
+                                        Total: $totalRupeesStr ($tradeCount trade(s))
+                                    """.trimIndent()
+                                    TelegramNotifier.sendAlert(eodMsg)
+                                }
+
                                 activePosition = null
                             }
                         }
@@ -228,6 +293,33 @@ class LiveTradingRunner(
                 }
             }
         }
+    }
+
+    private fun formatInstrumentName(symbol: String): String {
+        try {
+            val clean = symbol.substringAfter(":")
+            val indexName = if (clean.contains("BANKNIFTY")) "BANKNIFTY" else "NIFTY"
+            val optionType = if (clean.endsWith("CE")) "CE" else "PE"
+            val remaining = clean.removePrefix(indexName).removeSuffix(optionType)
+            if (remaining.length >= 5) {
+                val strike = remaining.takeLast(5)
+                val expiryPart = remaining.dropLast(5)
+                val monthChar = expiryPart.getOrNull(2) ?: 'O'
+                val monthName = when (monthChar.uppercaseChar()) {
+                    'O' -> "Oct"
+                    'N' -> "Nov"
+                    'D' -> "Dec"
+                    'J' -> "Jan"
+                    'F' -> "Feb"
+                    'M' -> "Mar"
+                    'A' -> "Apr"
+                    else -> "Oct"
+                }
+                val year = "20" + expiryPart.take(2)
+                return "$indexName-$monthName$year-$strike-$optionType"
+            }
+        } catch (_: Exception) {}
+        return symbol.substringAfter(":")
     }
 
     private suspend fun waitForNext1MinBoundary() {
