@@ -7,19 +7,14 @@ data class StrangleLeg(
     val symbol: String,
     val type: String, // "CE" or "PE"
     val strike: Int,
-    val entryPrice: Double,
+    var entryPrice: Double, // Entry price updated on re-entry
     var currentPrice: Double,
     var stopLossPrice: Double, // Entry * 1.40 for short straddle
     var targetPrice: Double,   // Entry * 0.30 for short straddle
     var status: String = "ACTIVE", // ACTIVE, TARGET_HIT, SL_HIT, EXITED
     var targetReentryCount: Int = 0,
     var realizedPnl: Double = 0.0
-) {
-    fun calculateUnrealizedPnl(ltp: Double): Double {
-        // Short option: PnL = Entry - LTP
-        return (entryPrice - ltp)
-    }
-}
+)
 
 data class IndexStrangleState(
     val indexName: String, // "NIFTY" or "SENSEX"
