@@ -1,5 +1,6 @@
 package com.example.strategy
 
+import com.example.service.FyersRealtimeStreamer
 import java.time.DayOfWeek
 import java.time.LocalDate
 
@@ -21,22 +22,24 @@ data class IndexStrangleState(
     var callLeg: StrangleLeg? = null,
     var putLeg: StrangleLeg? = null,
     var isSquareOff: Boolean = false,
-    var overallMtmSlBreached: Boolean = false
+    var overallMtmSlBreached: Boolean = false,
+    var streamer: FyersRealtimeStreamer? = null
 ) {
-    fun getTotalMtm(callLtp: Double, putLtp: Double, lotSize: Double): Double {
+    fun getTotalMtm(lotSize: Double): Double {
         var mtmPts = 0.0
-        if (callLeg != null && callLeg!!.status == "ACTIVE") {
-            callLeg!!.currentPrice = callLtp
-            mtmPts += (callLeg!!.entryPrice - callLtp)
-        } else if (callLeg != null) {
-            mtmPts += callLeg!!.realizedPnl
+        if (callLeg != null) {
+            if (callLeg!!.status == "ACTIVE") {
+                mtmPts += (callLeg!!.entryPrice - callLeg!!.currentPrice)
+            } else {
+                mtmPts += callLeg!!.realizedPnl
+            }
         }
-
-        if (putLeg != null && putLeg!!.status == "ACTIVE") {
-            putLeg!!.currentPrice = putLtp
-            mtmPts += (putLeg!!.entryPrice - putLtp)
-        } else if (putLeg != null) {
-            mtmPts += putLeg!!.realizedPnl
+        if (putLeg != null) {
+            if (putLeg!!.status == "ACTIVE") {
+                mtmPts += (putLeg!!.entryPrice - putLeg!!.currentPrice)
+            } else {
+                mtmPts += putLeg!!.realizedPnl
+            }
         }
         return mtmPts * lotSize
     }
