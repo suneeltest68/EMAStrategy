@@ -107,6 +107,7 @@ class LiveTradingRunner(
                 return@launch
             }
 
+
             println("Successfully loaded ${candles.size} warmup candles. Synchronizing with 1-min candle boundaries...")
 
             var activePosition: EmaTrendPositionContext? = null
