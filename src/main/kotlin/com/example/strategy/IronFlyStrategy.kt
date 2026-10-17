@@ -1,5 +1,6 @@
 package com.example.strategy
 
+import io.github.cdimascio.dotenv.dotenv
 import java.time.DayOfWeek
 import java.time.LocalDate
 import kotlin.math.abs
@@ -28,17 +29,52 @@ data class IronFlyPosition(
 }
 
 object IronFlyStrategyConfig {
-    // High-impact event dates (RBI policy, Union Budget, US Fed, major elections, etc.)
-    val highImpactDates = setOf(
-        "2026-02-01", // Union Budget example
-        "2026-04-08", // RBI Policy example
-        "2026-06-10", // US Fed example
-        "2026-10-20", // Dussehra holiday example
-        "2026-11-03"  // Election example
-    )
+    private val dotenv = dotenv { ignoreIfMissing = true }
+
+    // High-impact event dates (Supports both dd-MM-yyyy and yyyy-MM-dd formats)
+    // If HIGH_IMPACT_DATES is empty or not set, zero days are skipped (trades every eligible day).
+    val highImpactDates: Set<LocalDate> by lazy {
+        val envRaw = System.getenv("HIGH_IMPACT_DATES") ?: dotenv["HIGH_IMPACT_DATES"] ?: ""
+        val dateSet = mutableSetOf<LocalDate>()
+        
+        if (envRaw.isNotEmpty()) {
+            val rawList = envRaw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            for (dStr in rawList) {
+                val parsed = parseFlexibleDate(dStr)
+                if (parsed != null) {
+                    dateSet.add(parsed)
+                }
+            }
+        }
+        dateSet
+    }
+
+    private fun parseFlexibleDate(dateStr: String): LocalDate? {
+        return try {
+            if (dateStr.contains("-")) {
+                val parts = dateStr.split("-")
+                if (parts[0].length == 4) {
+                    LocalDate.parse(dateStr) // yyyy-MM-dd
+                } else {
+                    LocalDate.of(parts[2].toInt(), parts[1].toInt(), parts[0].toInt()) // dd-MM-yyyy
+                }
+            } else if (dateStr.contains("/")) {
+                val parts = dateStr.split("/")
+                if (parts[0].length == 4) {
+                    LocalDate.of(parts[0].toInt(), parts[1].toInt(), parts[2].toInt()) // yyyy/MM/dd
+                } else {
+                    LocalDate.of(parts[2].toInt(), parts[1].toInt(), parts[0].toInt()) // dd/MM/yyyy
+                }
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     fun isHighImpactDay(date: LocalDate): Boolean {
-        return highImpactDates.contains(date.toString())
+        return highImpactDates.contains(date)
     }
 
     /**
