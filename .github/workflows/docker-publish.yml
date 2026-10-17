@@ -2,7 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ "OneMinForLive", "main", "master" ]
+    branches: [ "OneMinForLive", "main", "master", "sensex-nifty-option-selling-algo" , "feature/iron-fly" ]
   workflow_dispatch:
 
 jobs:
