@@ -94,6 +94,17 @@ object FyersAuthDaemon {
                 println("\n[Daemon] Next daily startup scheduled for: $nextRun (in ${delayMillis / 1000 / 60} minutes)")
                 delay(delayMillis)
             } else {
+                val now = ZonedDateTime.now(istZone)
+                val marketCloseToday = now.withHour(15).withMinute(25).withSecond(0).withNano(0)
+                if (now.isAfter(marketCloseToday)) {
+                    println("\n[Daemon] First startup after market hours today. Skipping today and sleeping until 9:00 AM tomorrow...")
+                    TelegramNotifier.sendAlert("💤 [IRON FLY Strategy] Deployed after market hours today. Sleeping until 9:00 AM IST tomorrow.")
+                    isFirstRun = false
+                    val nextRun = now.withHour(9).withMinute(0).withSecond(0).withNano(0).plusDays(1)
+                    val delayMillis = Duration.between(now, nextRun).toMillis()
+                    delay(delayMillis)
+                    continue
+                }
                 println("\n[Daemon] First startup: Running trading session immediately...")
                 isFirstRun = false
             }
