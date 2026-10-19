@@ -1,6 +1,7 @@
 package com.example.service
 
 import com.example.strategy.*
+import com.example.util.OiChartGenerator
 import com.example.util.OptionUtils
 import com.example.viewmodel.AuthViewModel
 import kotlinx.coroutines.*
@@ -19,6 +20,7 @@ class ContinuousMorningStrategyRunner(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val istZone = ZoneId.of("Asia/Kolkata")
     private val triggeredDays = ConcurrentHashMap<String, Boolean>()
+    private val signalSentDays = ConcurrentHashMap<String, Boolean>()
     private val resolvedExpiryCache = ConcurrentHashMap<String, String>()
 
     fun startContinuousSession() {
@@ -36,8 +38,8 @@ class ContinuousMorningStrategyRunner(
                 val dateStr = today.toString()
 
                 val marketOpen = LocalTime.of(9, 15)
-                val squareOffTime = LocalTime.of(15, 25)
-                val marketClose = LocalTime.of(15, 30)
+                val squareOffTime = LocalTime.of(23, 25)
+                val marketClose = LocalTime.of(23, 30)
 
                 // 1. Check market hours (9:15 AM to 3:25 PM)
                 if (currentTime.isBefore(marketOpen)) {
@@ -82,18 +84,59 @@ class ContinuousMorningStrategyRunner(
 
                 println("🔍 [Continuous Check] Evaluating Morning Strategy for $selectedIndex at $currentTime (Bypassing cache for fresh live data)...")
                 try {
-                    val signal = evaluateSignal(selectedIndex)
+                    val evalResult = evaluateSignalWithData(selectedIndex)
+                    val signal = evalResult.signal
                     if (signal.action == "BULL_PUT_SPREAD" || signal.action == "BEAR_CALL_SPREAD") {
                         println("   📈 [Max OI Detected] Strike: ${signal.maxOiStrike} | OI: ${signal.maxOi}")
                         println("   🎯 [Signal Fulfilled] Strike: ${signal.triggerStrike} (${signal.dominantType}) | OI: ${signal.triggerStrikeOi} | Threshold (80%): ${signal.thresholdOi}")
                         println("   📌 [Strategy Identified] ${signal.action}")
+
+                        val signalStateKey = "$selectedIndex-$dateStr-signal"
+                        if (signalSentDays[signalStateKey] != true) {
+                            signalSentDays[signalStateKey] = true
+                            val nowStr = LocalDateTime.now(istZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                            val signalMsg = """
+                                🚀 STRATEGY IDENTIFIED · MORNING STRATEGY (${signal.action})
+                                Index: $selectedIndex
+                                
+                                📈 Max OI & Strike:
+                                  Strike: ${signal.maxOiStrike} | OI: ${signal.maxOi}
+                                  
+                                🎯 Trigger Strike & OI:
+                                  Strike: ${signal.triggerStrike} (${signal.dominantType}) | OI: ${signal.triggerStrikeOi}
+                                  
+                                📌 Reason: ${signal.reason}
+                                [PAPER] $nowStr IST
+                            """.trimIndent()
+                            TelegramNotifier.sendAlert(signalMsg)
+
+                            try {
+                                val spotQuotes = viewModel.fetchStockQuotes(appId, token, selectedIndex)
+                                val spotPrice = extractSpotLtp(spotQuotes, selectedIndex)
+                                val strikeInterval = if (selectedIndex.contains("SENSEX")) 100 else 50
+                                val atmStrike = OptionUtils.calculateAtmStrike(spotPrice, strikeInterval)
+
+                                val chartBytes = OiChartGenerator.generateOiChart(
+                                    indexName = if (selectedIndex.contains("SENSEX")) "SENSEX" else "NIFTY",
+                                    dateStr = dateStr,
+                                    atmStrike = atmStrike,
+                                    maxOiStrike = signal.maxOiStrike,
+                                    strikesData = evalResult.allStrikesData
+                                )
+                                TelegramNotifier.sendPhoto(chartBytes, signalMsg)
+                                println("📊 [Telegram] Strategy OI Chart sent immediately.")
+                            } catch (e: Exception) {
+                                println("❌ [Telegram Error] Failed to send strategy OI chart: ${e.message}")
+                            }
+                        }
+
                         println("   🎯 Checking Target Percentage Matrix until end of 5-min window...")
                         
                         // Check Target Percentage Matrix until the end of this 5-minute window
                         val matched = evaluatePercentageMatrixInWindow(selectedIndex, signal, today, currentTime, dateStr)
                         if (matched) {
                             triggeredDays[stateKey] = true
-                            executeOptimizedSpread(selectedIndex, signal, today, dateStr)
+                            executeOptimizedSpread(selectedIndex, signal, evalResult.allStrikesData, today, dateStr)
                             println("🛑 [ContinuousMorning] Trade executed successfully. Pausing for today.")
                         } else {
                             println("ℹ️ [Percentage Matrix] Target % matrix not met by end of 5-min window. Resuming strategy scan for next window...")
@@ -113,7 +156,7 @@ class ContinuousMorningStrategyRunner(
         }
     }
 
-    private suspend fun evaluateSignal(indexSymbol: String): MorningStrategySignal {
+    private suspend fun evaluateSignalWithData(indexSymbol: String): MorningStrategyEvaluationResult {
         val strikeInterval = if (indexSymbol.contains("SENSEX")) 100 else 50
 
         val spotQuotes = viewModel.fetchStockQuotes(appId, token, indexSymbol)
@@ -141,7 +184,7 @@ class ContinuousMorningStrategyRunner(
         } ?: optionChain.optJSONArray("optionsChain") ?: optionChain.optJSONArray("options") ?: optionChain.optJSONArray("data")
         ?: throw IllegalStateException("Invalid option chain structure")
 
-        return MorningStrategyEvaluator.evaluateSignal(optionsArray, monitoredStrikes)
+        return MorningStrategyEvaluator.evaluateSignalWithData(optionsArray, monitoredStrikes)
     }
 
     private suspend fun evaluatePercentageMatrixInWindow(
@@ -270,17 +313,19 @@ class ContinuousMorningStrategyRunner(
         return false
     }
 
-    private suspend fun executeOptimizedSpread(indexSymbol: String, signal: MorningStrategySignal, today: LocalDate, dateStr: String) {
+    private suspend fun executeOptimizedSpread(
+        indexSymbol: String,
+        signal: MorningStrategySignal,
+        allStrikesData: List<StrikeOiData>,
+        today: LocalDate,
+        dateStr: String
+    ) {
         val indexName = if (indexSymbol.contains("SENSEX")) "SENSEX" else "NIFTY"
         val strikeInterval = if (indexName == "SENSEX") 100 else 50
         val lotSize = if (indexName == "SENSEX") 20.0 else 65.0
 
         val targetConfig = MorningStrategyEvaluator.getTargetConfig(indexName, today)
         val isExpiryDay = targetConfig.isExpiryDay
-        val targetMinProfitPct = targetConfig.minProfitPct
-        val targetMaxProfitPct = targetConfig.maxProfitPct
-        val targetMinLossPct = targetConfig.minLossPct
-        val targetMaxLossPct = targetConfig.maxLossPct
 
         val expiryCacheKey = "$indexSymbol-$dateStr"
         val resolvedExpiryDate = resolvedExpiryCache.getOrPut(expiryCacheKey) {
@@ -417,6 +462,21 @@ class ContinuousMorningStrategyRunner(
         """.trimIndent()
         println(entryMsg)
         TelegramNotifier.sendAlert(entryMsg)
+
+        // Generate OI Chart and Send via Telegram photo
+        try {
+            val chartBytes = OiChartGenerator.generateOiChart(
+                indexName = indexName,
+                dateStr = dateStr,
+                atmStrike = atmStrike,
+                maxOiStrike = signal.maxOiStrike,
+                strikesData = allStrikesData
+            )
+            TelegramNotifier.sendPhoto(chartBytes, entryMsg)
+            println("📊 [Telegram] OI Chart image sent successfully.")
+        } catch (e: Exception) {
+            println("❌ [Telegram Error] Failed to generate/send OI chart photo: ${e.message}")
+        }
 
         TradingJournalService.logTrade(TradeJournalEntry(bestShortSym, bestShortLtp, 0.0, lotSize.toInt(), bestNetCredit, signal.action))
     }

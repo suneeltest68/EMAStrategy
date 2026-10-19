@@ -54,4 +54,56 @@ object TelegramNotifier {
             }
         }
     }
+
+    suspend fun sendPhoto(imageBytes: ByteArray, caption: String) {
+        if (!isEnabled || botToken == "YOUR_BOT_TOKEN_HERE" || chatId == "YOUR_CHAT_ID_HERE") {
+            println("[Telegram Photo - Mock] Caption: $caption")
+            return
+        }
+
+        withContext(Dispatchers.IO) {
+            try {
+                val boundary = "Boundary_" + System.currentTimeMillis()
+                val urlString = "https://api.telegram.org/bot$botToken/sendPhoto"
+                val url = URL(urlString)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+
+                conn.outputStream.use { outputStream ->
+                    val writer = OutputStreamWriter(outputStream, StandardCharsets.UTF_8)
+                    
+                    // chatId field
+                    writer.write("--$boundary\r\n")
+                    writer.write("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n")
+                    writer.write("$chatId\r\n")
+
+                    // caption field
+                    writer.write("--$boundary\r\n")
+                    writer.write("Content-Disposition: form-data; name=\"caption\"\r\n\r\n")
+                    writer.write("$caption\r\n")
+
+                    // photo file part
+                    writer.write("--$boundary\r\n")
+                    writer.write("Content-Disposition: form-data; name=\"photo\"; filename=\"oi_chart.png\"\r\n")
+                    writer.write("Content-Type: image/png\r\n\r\n")
+                    writer.flush()
+
+                    outputStream.write(imageBytes)
+                    outputStream.flush()
+
+                    writer.write("\r\n--$boundary--\r\n")
+                    writer.flush()
+                }
+
+                val responseCode = conn.responseCode
+                if (responseCode !in 200..299) {
+                    println("Failed to send Telegram photo. Response code: $responseCode")
+                }
+            } catch (e: Exception) {
+                println("Telegram photo exception: ${e.message}")
+            }
+        }
+    }
 }

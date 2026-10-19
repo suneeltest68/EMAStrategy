@@ -13,6 +13,11 @@ data class TargetPercentageConfig(
     val maxLossPct: Double
 )
 
+data class MorningStrategyEvaluationResult(
+    val signal: MorningStrategySignal,
+    val allStrikesData: List<StrikeOiData>
+)
+
 object MorningStrategyEvaluator {
     fun getTargetConfig(indexName: String, today: LocalDate): TargetPercentageConfig {
         val isExpiryDay = if (indexName.uppercase().contains("SENSEX")) {
@@ -54,6 +59,13 @@ object MorningStrategyEvaluator {
         optionsArray: JSONArray,
         monitoredStrikes: Set<Int>
     ): MorningStrategySignal {
+        return evaluateSignalWithData(optionsArray, monitoredStrikes).signal
+    }
+
+    fun evaluateSignalWithData(
+        optionsArray: JSONArray,
+        monitoredStrikes: Set<Int>
+    ): MorningStrategyEvaluationResult {
         val allStrikesData = mutableListOf<StrikeOiData>()
 
         for (i in 0 until optionsArray.length()) {
@@ -82,12 +94,12 @@ object MorningStrategyEvaluator {
         val thresholdOi = (maxOi * 0.80).toLong()
 
         // 2. Check if the Max OI strike is within the 5 monitored strikes (ATM ± 2 intervals)
-        if (monitoredStrikes.contains(maxOiItem.strike)) {
+        val signal = if (monitoredStrikes.contains(maxOiItem.strike)) {
             val isPut = maxOiItem.optionType.equals("PE", ignoreCase = true) || maxOiItem.symbol.endsWith("PE")
             val dominatingType = if (isPut) "PUT" else "CALL"
             val action = if (isPut) "BULL_PUT_SPREAD" else "BEAR_CALL_SPREAD"
 
-            return MorningStrategySignal(
+            MorningStrategySignal(
                 action = action,
                 maxOiStrike = maxOiItem.strike,
                 maxOi = maxOi,
@@ -99,7 +111,7 @@ object MorningStrategyEvaluator {
                 reason = "Max OI strike ${maxOiItem.strike} (${maxOiItem.optionType}) with ${maxOiItem.openInterest} OI is within monitored 5 strikes"
             )
         } else {
-            return MorningStrategySignal(
+            MorningStrategySignal(
                 action = "NO_TRADE",
                 maxOiStrike = maxOiItem.strike,
                 maxOi = maxOi,
@@ -111,5 +123,7 @@ object MorningStrategyEvaluator {
                 reason = "Max OI strike ${maxOiItem.strike} is outside the 5 monitored strikes"
             )
         }
+
+        return MorningStrategyEvaluationResult(signal, allStrikesData)
     }
 }
