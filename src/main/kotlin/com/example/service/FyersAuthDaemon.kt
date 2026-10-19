@@ -157,8 +157,8 @@ object FyersAuthDaemon {
 
             if (activeToken != null) {
                 try {
-                    val runner = SensexNiftyAlgoRunner(viewModel, appId, activeToken)
-                    runner.startAlgoSession()
+                    val runner = ContinuousMorningStrategyRunner(viewModel, appId, activeToken)
+                    runner.startContinuousSession()
 
                     val now = ZonedDateTime.now(istZone)
                     val marketCloseTimeToday = now.withHour(15).withMinute(35).withSecond(0).withNano(0)
