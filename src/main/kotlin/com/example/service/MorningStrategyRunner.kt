@@ -114,65 +114,19 @@ class MorningStrategyRunner(
         val optionsArray = optionChain.optJSONArray("optionsChain") ?: optionChain.optJSONArray("options")
             ?: optionChain.optJSONArray("data") ?: throw IllegalStateException("Invalid option chain structure")
 
-        val allStrikesData = mutableListOf<StrikeOiData>()
-
-        for (i in 0 until optionsArray.length()) {
-            val opt = optionsArray.getJSONObject(i)
-            val strike = opt.optInt("strike_price", opt.optInt("strikePrice", opt.optInt("strike", 0)))
-            val symbol = opt.optString("symbol", opt.optString("fyToken", ""))
-            val type = opt.optString("option_type", opt.optString("optionType", ""))
-            val ltp = opt.optDouble("ltp", opt.optDouble("lp", 0.0))
-            val oi = opt.optLong("open_interest", opt.optLong("openInterest", opt.optLong("oi", 0L)))
-            val changeOi = opt.optLong("change_in_oi", opt.optLong("changeInOi", 0L))
-
-            if (strike > 0 && symbol.isNotEmpty()) {
-                val optType = if (type.equals("CE", ignoreCase = true) || symbol.endsWith("CE")) "CE" else "PE"
-                allStrikesData.add(StrikeOiData(strike, optType, symbol, ltp, oi, changeOi))
-            }
-        }
-
-        if (allStrikesData.isEmpty()) throw IllegalStateException("No strike data parsed from option chain")
-
-        val maxOiItem = allStrikesData.maxByOrNull { it.openInterest }
-            ?: throw IllegalStateException("Could not determine max OI")
-        val maxOi = maxOiItem.openInterest
-        val thresholdOi = (maxOi * 0.80).toLong()
-
         val sessionDeadline = LocalTime.of(10, 10)
 
         while (LocalTime.now(istZone).isBefore(sessionDeadline)) {
-            for (item in allStrikesData) {
-                if (monitoredStrikes.contains(item.strike) && item.openInterest >= thresholdOi) {
-                    val dominatingType = if (item.optionType == "PE") "PUT" else "CALL"
-                    val action = if (dominatingType == "PUT") "BULL_PUT_SPREAD" else "BEAR_CALL_SPREAD"
-
-                    return MorningStrategySignal(
-                        action = action,
-                        maxOiStrike = maxOiItem.strike,
-                        maxOi = maxOi,
-                        triggerStrike = item.strike,
-                        triggerStrikeOi = item.openInterest,
-                        thresholdOi = thresholdOi,
-                        dominantType = dominatingType,
-                        triggerSymbol = item.symbol,
-                        reason = "Strike ${item.strike} reached ${item.openInterest} OI (>= 80% of Max OI $maxOi)"
-                    )
+            try {
+                val signal = MorningStrategyEvaluator.evaluateSignal(optionsArray, monitoredStrikes)
+                if (signal.action != "NO_TRADE") {
+                    return signal
                 }
-            }
+            } catch (_: Exception) {}
             delay(3_000L)
         }
 
-        return MorningStrategySignal(
-            action = "NO_TRADE",
-            maxOiStrike = maxOiItem.strike,
-            maxOi = maxOi,
-            triggerStrike = 0,
-            triggerStrikeOi = 0L,
-            thresholdOi = thresholdOi,
-            dominantType = "",
-            triggerSymbol = "",
-            reason = "80% OI threshold not met"
-        )
+        return MorningStrategyEvaluator.evaluateSignal(optionsArray, monitoredStrikes)
     }
 
     private suspend fun executeSpread(indexSymbol: String, signal: MorningStrategySignal) {
