@@ -54,24 +54,31 @@ object OptionUtils {
         indexSymbol: String,
         spotPrice: Double,
         optionType: String,
-        expiryIndex: Int = 0
+        expiryIndex: Int = 0,
+        isForLiveTrading: Boolean = false
     ): String {
         val strikeInterval = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true) || indexSymbol.contains("SENSEX", ignoreCase = true)) 100 else 50
         val atmStrike = calculateAtmStrike(spotPrice, strikeInterval)
 
-        val cacheKey = indexSymbol
-        var optionChain = optionChainCache[cacheKey]
-        if (optionChain == null) {
-            var attempts = 0
-            while (attempts < 3 && optionChain == null) {
-                kotlinx.coroutines.delay(500L * (attempts + 1))
-                optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
-                attempts++
+        val optionChain = if (isForLiveTrading) {
+            viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = true)
+                ?: throw IllegalStateException("Failed to fetch fresh live option chain from Fyers API for symbol $indexSymbol")
+        } else {
+            val cacheKey = indexSymbol
+            var chain = optionChainCache[cacheKey]
+            if (chain == null) {
+                var attempts = 0
+                while (attempts < 3 && chain == null) {
+                    kotlinx.coroutines.delay(500L * (attempts + 1))
+                    chain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = false)
+                    attempts++
+                }
+                if (chain == null) {
+                    throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol after retries (Rate limit 429)")
+                }
+                optionChainCache[cacheKey] = chain
             }
-            if (optionChain == null) {
-                throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol after retries (Rate limit 429)")
-            }
-            optionChainCache[cacheKey] = optionChain
+            chain
         }
 
         var expiryDateStr: String? = null

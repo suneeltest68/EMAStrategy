@@ -19,14 +19,15 @@ class ContinuousMorningStrategyRunner(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val istZone = ZoneId.of("Asia/Kolkata")
     private val triggeredDays = ConcurrentHashMap<String, Boolean>()
+    private val resolvedExpiryCache = ConcurrentHashMap<String, String>()
 
     fun startContinuousSession() {
         scope.launch {
             println("==============================================================")
-            println("STARTING CONTINUOUS 5-MINUTE MORNING STRATEGY ALGO")
+            println("STARTING CONTINUOUS 3-SECOND MORNING STRATEGY ALGO (BATCH OPTIMIZED)")
             println("==============================================================\n")
 
-            TelegramNotifier.sendAlert("🚀 Continuous 5-Minute Morning Strategy Algo Started (9:15 AM - 3:25 PM).")
+            TelegramNotifier.sendAlert("🚀 Continuous 3-Second Morning Strategy Algo Started (9:15 AM - 3:25 PM).")
 
             while (isActive) {
                 val now = LocalDateTime.now(istZone)
@@ -73,36 +74,46 @@ class ContinuousMorningStrategyRunner(
                 val stateKey = "$selectedIndex-$dateStr"
                 val alreadyTriggered = triggeredDays[stateKey] ?: false
 
-                if (!alreadyTriggered) {
-                    println("🔍 [5-Min Check] Evaluating Morning Strategy for $selectedIndex at $currentTime...")
-                    try {
-                        val signal = evaluate5MinSignal(selectedIndex)
-                        if (signal.action == "BULL_PUT_SPREAD" || signal.action == "BEAR_CALL_SPREAD") {
-                            // Try to fulfill Target Percentage Matrix within this 5-minute window
-                            val matched = evaluatePercentageMatrixInWindow(selectedIndex, signal, today, currentTime)
-                            if (matched) {
-                                triggeredDays[stateKey] = true
-                                executeOptimizedSpread(selectedIndex, signal, today)
-                            } else {
-                                println("ℹ️ [Percentage Matrix] Target % matrix not met within 5-min window. Resuming standard OI scanning...")
-                            }
-                        } else {
-                            println("ℹ️ [5-Min Check] No 80% OI trigger met at $currentTime.")
-                        }
-                    } catch (e: Exception) {
-                        val errMsg = "❌ [ContinuousMorning CRITICAL ERROR]: ${e.message}"
-                        println(errMsg)
-                        TelegramNotifier.sendAlert(errMsg)
-                    }
+                if (alreadyTriggered) {
+                    println("[ContinuousMorning] Trade already taken for today ($stateKey). Pausing option chain polling. Sleeping until EOD/tomorrow...")
+                    delay(3600_000L)
+                    continue
                 }
 
-                // Wait for the next 5-minute candle boundary (e.g. 09:20, 09:25, 09:30...)
-                waitForNext5MinBoundary()
+                println("🔍 [Continuous Check] Evaluating Morning Strategy for $selectedIndex at $currentTime (Bypassing cache for fresh live data)...")
+                try {
+                    val signal = evaluateSignal(selectedIndex)
+                    if (signal.action == "BULL_PUT_SPREAD" || signal.action == "BEAR_CALL_SPREAD") {
+                        println("   📈 [Max OI Detected] Strike: ${signal.maxOiStrike} | OI: ${signal.maxOi}")
+                        println("   🎯 [Signal Fulfilled] Strike: ${signal.triggerStrike} (${signal.dominantType}) | OI: ${signal.triggerStrikeOi} | Threshold (80%): ${signal.thresholdOi}")
+                        println("   📌 [Strategy Identified] ${signal.action}")
+                        println("   🎯 Checking Target Percentage Matrix until end of 5-min window...")
+                        
+                        // Check Target Percentage Matrix until the end of this 5-minute window
+                        val matched = evaluatePercentageMatrixInWindow(selectedIndex, signal, today, currentTime, dateStr)
+                        if (matched) {
+                            triggeredDays[stateKey] = true
+                            executeOptimizedSpread(selectedIndex, signal, today, dateStr)
+                            println("🛑 [ContinuousMorning] Trade executed successfully. Pausing for today.")
+                        } else {
+                            println("ℹ️ [Percentage Matrix] Target % matrix not met by end of 5-min window. Resuming strategy scan for next window...")
+                        }
+                    } else {
+                        println("ℹ️ [Continuous Check] No 80% OI trigger met at $currentTime.")
+                    }
+                } catch (e: Exception) {
+                    val errMsg = "❌ [ContinuousMorning CRITICAL ERROR]: ${e.message}"
+                    println(errMsg)
+                    TelegramNotifier.sendAlert(errMsg)
+                }
+
+                // Continuously poll every 3 seconds for fast reaction time
+                delay(3_000L)
             }
         }
     }
 
-    private suspend fun evaluate5MinSignal(indexSymbol: String): MorningStrategySignal {
+    private suspend fun evaluateSignal(indexSymbol: String): MorningStrategySignal {
         val strikeInterval = if (indexSymbol.contains("SENSEX")) 100 else 50
 
         val spotQuotes = viewModel.fetchStockQuotes(appId, token, indexSymbol)
@@ -119,10 +130,16 @@ class ContinuousMorningStrategyRunner(
             atmStrike - (2 * strikeInterval)
         )
 
-        val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
-            ?: throw IllegalStateException("Failed to fetch option chain for $indexSymbol")
-        val optionsArray = optionChain.optJSONArray("optionsChain") ?: optionChain.optJSONArray("options")
-            ?: optionChain.optJSONArray("data") ?: throw IllegalStateException("Invalid option chain structure")
+        // Fetch fresh live option chain (isForLiveTrading = true bypasses cache)
+        val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = true)
+            ?: throw IllegalStateException("Failed to fetch fresh live option chain for $indexSymbol")
+        val optionsArray = if (optionChain.has("data")) {
+            val dataObj = optionChain.getJSONObject("data")
+            dataObj.optJSONArray("optionsChain") ?: dataObj.optJSONArray("options") ?: dataObj.optJSONArray("data")
+        } else {
+            null
+        } ?: optionChain.optJSONArray("optionsChain") ?: optionChain.optJSONArray("options") ?: optionChain.optJSONArray("data")
+        ?: throw IllegalStateException("Invalid option chain structure")
 
         val allStrikesData = mutableListOf<StrikeOiData>()
 
@@ -184,7 +201,8 @@ class ContinuousMorningStrategyRunner(
         indexSymbol: String,
         signal: MorningStrategySignal,
         today: LocalDate,
-        triggerTime: LocalTime
+        triggerTime: LocalTime,
+        dateStr: String
     ): Boolean {
         val indexName = if (indexSymbol.contains("SENSEX")) "SENSEX" else "NIFTY"
         val strikeInterval = if (indexName == "SENSEX") 100 else 50
@@ -195,6 +213,42 @@ class ContinuousMorningStrategyRunner(
             today.dayOfWeek == DayOfWeek.TUESDAY
         }
 
+        val regimeName = if (isExpiryDay) "EXPIRY DAY" else "PRE-EXPIRY DAY"
+
+        // Resolve Expiry Date string for logging
+        val expiryCacheKey = "$indexSymbol-$dateStr"
+        val resolvedExpiryDate = resolvedExpiryCache.getOrPut(expiryCacheKey) {
+            var expiry = "Current Weekly Expiry"
+            try {
+                val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = true)
+                if (optionChain != null && optionChain.has("data")) {
+                    val dataObj = optionChain.getJSONObject("data")
+                    val expiryArray = dataObj.optJSONArray("expiryData") ?: dataObj.optJSONArray("expiry_dates")
+                    if (expiryArray != null && expiryIndex in 0 until expiryArray.length()) {
+                        val expiryObj = expiryArray.optJSONObject(expiryIndex)
+                        expiry = expiryObj?.optString("date", expiryObj.optString("expiry", ""))
+                            ?: expiryArray.optString(expiryIndex, "")
+                    }
+                }
+            } catch (_: Exception) {}
+            expiry
+        }
+
+        val expiryDayOfWeek = try {
+            val parsedDate = LocalDate.parse(resolvedExpiryDate, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+            parsedDate.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+        } catch (_: Exception) {
+            try {
+                val parsedDate = LocalDate.parse(resolvedExpiryDate, DateTimeFormatter.ofPattern("dd-MM-yyyy"))
+                parsedDate.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+            } catch (_: Exception) {
+                "Weekly Expiry"
+            }
+        }
+        val expiryDisplay = "$resolvedExpiryDate ($expiryDayOfWeek)"
+
+        println("📅 [Matrix Evaluation] Index: $indexName | Expiry: $expiryDisplay | Regime: $regimeName")
+
         val targetMinProfitPct = if (isExpiryDay) 0.8 else 1.8
         val targetMaxProfitPct = if (isExpiryDay) 1.2 else 2.3
         val targetMinLossPct = if (isExpiryDay) 8.0 else 14.0
@@ -204,13 +258,9 @@ class ContinuousMorningStrategyRunner(
         val spotPrice = extractSpotLtp(spotQuotes, indexSymbol)
         val atmStrike = OptionUtils.calculateAtmStrike(spotPrice, strikeInterval)
 
-        val candidateOffsets = if (indexName == "SENSEX") {
-            listOf(200, 300, 400, 500, 600)
-        } else {
-            listOf(100, 150, 200, 250, 300)
-        }
+        val candidateOffsets = listOf(100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000)
 
-        // Calculate the end of the current 5-minute window (e.g. triggered at 9:16, window ends at 9:20)
+        // Calculate the end of the current 5-minute window
         val currentMinute = triggerTime.minute
         val windowEndMinute = ((currentMinute / 5) + 1) * 5
         val windowEndTime = if (windowEndMinute >= 60) {
@@ -221,15 +271,33 @@ class ContinuousMorningStrategyRunner(
 
         val optionType = if (signal.action == "BULL_PUT_SPREAD") "PE" else "CE"
 
-        // Check continuously until the end of the 5-minute window
-        while (LocalTime.now(istZone).isBefore(windowEndTime)) {
-            for (offset in candidateOffsets) {
-                val shortSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), optionType, expiryIndex)
-                val longStrike = if (signal.action == "BULL_PUT_SPREAD") atmStrike - offset else atmStrike + offset
-                val longSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, longStrike.toDouble(), optionType, expiryIndex)
+        // Resolve Short Symbol (ATM) ONCE outside the loop to extract base expiry prefix locally
+        val shortSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), optionType, expiryIndex, isForLiveTrading = true)
+        val strikeStr = atmStrike.toString()
+        val baseExpiryPrefix = if (shortSym.contains(strikeStr)) {
+            shortSym.substringBefore(strikeStr)
+        } else {
+            val prefix = if (indexName == "SENSEX") "BSE:SENSEX" else "NSE:NIFTY"
+            prefix
+        }
 
-                val legQuotes = viewModel.fetchStockQuotes(appId, token, "$shortSym,$longSym")
-                val shortLtp = extractSpotLtp(legQuotes, shortSym)
+        val allSymbolsList = mutableListOf(shortSym)
+        for (offset in candidateOffsets) {
+            val longStrike = if (signal.action == "BULL_PUT_SPREAD") atmStrike - offset else atmStrike + offset
+            allSymbolsList.add("$baseExpiryPrefix$longStrike$optionType")
+        }
+
+        // Check every 10 seconds until the end of this 5-minute window using ONE batch quote call
+        while (LocalTime.now(istZone).isBefore(windowEndTime)) {
+            println("   🔄 [Matrix Check] Strategy: ${signal.action} | Scanning offsets (up to 1000 pts) | Targets -> Profit: [$targetMinProfitPct% - $targetMaxProfitPct%], Loss: [$targetMinLossPct% - $targetMaxLossPct%] at ${LocalTime.now(istZone)}...")
+
+            val symbolsStr = allSymbolsList.joinToString(",")
+            val legQuotes = viewModel.fetchStockQuotes(appId, token, symbolsStr)
+            val shortLtp = extractSpotLtp(legQuotes, shortSym)
+
+            for (offset in candidateOffsets) {
+                val longStrike = if (signal.action == "BULL_PUT_SPREAD") atmStrike - offset else atmStrike + offset
+                val longSym = "$baseExpiryPrefix$longStrike$optionType"
                 val longLtp = extractSpotLtp(legQuotes, longSym)
 
                 if (shortLtp > 0 && longLtp > 0 && shortLtp > longLtp) {
@@ -245,20 +313,22 @@ class ContinuousMorningStrategyRunner(
                         val inProfitRange = profitPct in targetMinProfitPct..targetMaxProfitPct
                         val inLossRange = lossPct in targetMinLossPct..targetMaxLossPct
 
+                        println("      • Offset ${offset}pts (Short Strike: $atmStrike @ ₹${String.format("%.2f", shortLtp)} / Long Strike: $longStrike @ ₹${String.format("%.2f", longLtp)}) -> Profit: ${String.format("%.2f", profitPct)}% (Target: $targetMinProfitPct-$targetMaxProfitPct%) | Loss: ${String.format("%.2f", lossPct)}% (Target: $targetMinLossPct-$targetMaxLossPct%) -> Match: ${inProfitRange && inLossRange}")
+
                         if (inProfitRange && inLossRange) {
-                            println("   ✅ [Target Matrix Met!] Found matching strikes within 5-min window (Profit: $profitPct%, Loss: $lossPct%).")
+                            println("   ✅ [Target Matrix Met!] Found matching strikes within window (Profit: $profitPct%, Loss: $lossPct%).")
                             return true
                         }
                     }
                 }
             }
-            delay(3_000L) // Check every 3 seconds within the 5-min window
+            delay(10_000L) // Check every 10 seconds within the window
         }
 
-        return false // If window ended and matrix not met, return false (do not trade, resume 5-min OI scanning)
+        return false
     }
 
-    private suspend fun executeOptimizedSpread(indexSymbol: String, signal: MorningStrategySignal, today: LocalDate) {
+    private suspend fun executeOptimizedSpread(indexSymbol: String, signal: MorningStrategySignal, today: LocalDate, dateStr: String) {
         val indexName = if (indexSymbol.contains("SENSEX")) "SENSEX" else "NIFTY"
         val strikeInterval = if (indexName == "SENSEX") 100 else 50
         val lotSize = if (indexName == "SENSEX") 20.0 else 65.0
@@ -274,17 +344,44 @@ class ContinuousMorningStrategyRunner(
         val targetMinLossPct = if (isExpiryDay) 8.0 else 14.0
         val targetMaxLossPct = if (isExpiryDay) 12.0 else 17.0
 
+        val expiryCacheKey = "$indexSymbol-$dateStr"
+        val resolvedExpiryDate = resolvedExpiryCache.getOrPut(expiryCacheKey) {
+            var expiry = "Current Weekly Expiry"
+            try {
+                val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = true)
+                if (optionChain != null && optionChain.has("data")) {
+                    val dataObj = optionChain.getJSONObject("data")
+                    val expiryArray = dataObj.optJSONArray("expiryData") ?: dataObj.optJSONArray("expiry_dates")
+                    if (expiryArray != null && expiryIndex in 0 until expiryArray.length()) {
+                        val expiryObj = expiryArray.optJSONObject(expiryIndex)
+                        expiry = expiryObj?.optString("date", expiryObj.optString("expiry", ""))
+                            ?: expiryArray.optString(expiryIndex, "")
+                    }
+                }
+            } catch (_: Exception) {}
+            expiry
+        }
+
+        val expiryDayOfWeek = try {
+            val parsedDate = LocalDate.parse(resolvedExpiryDate, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+            parsedDate.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+        } catch (_: Exception) {
+            try {
+                val parsedDate = LocalDate.parse(resolvedExpiryDate, DateTimeFormatter.ofPattern("dd-MM-yyyy"))
+                parsedDate.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+            } catch (_: Exception) {
+                "Weekly Expiry"
+            }
+        }
+        val expiryDisplay = "$resolvedExpiryDate ($expiryDayOfWeek)"
+
         val spotQuotes = viewModel.fetchStockQuotes(appId, token, indexSymbol)
         val spotPrice = extractSpotLtp(spotQuotes, indexSymbol)
         val atmStrike = OptionUtils.calculateAtmStrike(spotPrice, strikeInterval)
 
-        val candidateOffsets = if (indexName == "SENSEX") {
-            listOf(200, 300, 400, 500, 600)
-        } else {
-            listOf(100, 150, 200, 250, 300)
-        }
+        val candidateOffsets = listOf(100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000)
 
-        var bestOffset = if (indexName == "SENSEX") 400 else 200
+        var bestOffset = 200
         var bestShortSym = ""
         var bestLongSym = ""
         var bestShortLtp = 0.0
@@ -297,16 +394,32 @@ class ContinuousMorningStrategyRunner(
 
         val optionType = if (signal.action == "BULL_PUT_SPREAD") "PE" else "CE"
 
-        for (offset in candidateOffsets) {
-            val shortSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), optionType, expiryIndex)
-            val longStrike = if (signal.action == "BULL_PUT_SPREAD") atmStrike - offset else atmStrike + offset
-            val longSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, longStrike.toDouble(), optionType, expiryIndex)
+        val shortSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), optionType, expiryIndex, isForLiveTrading = true)
+        val strikeStr = atmStrike.toString()
+        val baseExpiryPrefix = if (shortSym.contains(strikeStr)) {
+            shortSym.substringBefore(strikeStr)
+        } else {
+            val prefix = if (indexName == "SENSEX") "BSE:SENSEX" else "NSE:NIFTY"
+            prefix
+        }
 
-            val legQuotes = viewModel.fetchStockQuotes(appId, token, "$shortSym,$longSym")
-            val shortLtp = extractSpotLtp(legQuotes, shortSym)
+        val allSymbolsList = mutableListOf(shortSym)
+        for (offset in candidateOffsets) {
+            val longStrike = if (signal.action == "BULL_PUT_SPREAD") atmStrike - offset else atmStrike + offset
+            allSymbolsList.add("$baseExpiryPrefix$longStrike$optionType")
+        }
+
+        val symbolsStr = allSymbolsList.joinToString(",")
+        val legQuotes = viewModel.fetchStockQuotes(appId, token, symbolsStr)
+        val shortLtp = extractSpotLtp(legQuotes, shortSym)
+
+        for (offset in candidateOffsets) {
+            val longStrike = if (signal.action == "BULL_PUT_SPREAD") atmStrike - offset else atmStrike + offset
+            val longSym = "$baseExpiryPrefix$longStrike$optionType"
             val longLtp = extractSpotLtp(legQuotes, longSym)
 
             if (shortLtp > 0 && longLtp > 0 && shortLtp > longLtp) {
+                val lotSize = if (indexName == "SENSEX") 20.0 else 65.0
                 val netCredit = (shortLtp - longLtp) * lotSize
                 val maxLoss = ((offset - (shortLtp - longLtp)) * lotSize)
                 val approxMargin = shortLtp * lotSize * 5.0
@@ -348,7 +461,7 @@ class ContinuousMorningStrategyRunner(
 
         val alertMsg = """
             🚀 5-MIN SIGNAL · MORNING STRATEGY
-            Index: $indexName
+            Index: $indexName | Expiry: $expiryDisplay
             
             📈 Max OI & Strike:
               Strike: ${signal.maxOiStrike} | OI: ${signal.maxOi}
@@ -362,9 +475,11 @@ class ContinuousMorningStrategyRunner(
         """.trimIndent()
         TelegramNotifier.sendAlert(alertMsg)
 
+        println("🎯 [Executing Strategy] ${signal.action} | Expiry: $expiryDisplay with optimized offset ${bestOffset}pts")
+
         val entryMsg = """
             🚀 ENTRY · MORNING STRATEGY (${signal.action}) [$regimeName]
-            Index: $indexName | ATM Strike: $atmStrike | Optimized Offset: ${bestOffset} pts
+            Index: $indexName | Expiry: $expiryDisplay | ATM Strike: $atmStrike | Offset: ${bestOffset} pts
               Short Leg: SELL $bestShortSym @ ₹${String.format("%.2f", bestShortLtp)}
               Long Hedge: BUY $bestLongSym @ ₹${String.format("%.2f", bestLongLtp)}
               Max Profit: ₹${String.format("%.2f", bestNetCredit)} (${String.format("%.2f", bestProfitPct)}%)
@@ -376,25 +491,6 @@ class ContinuousMorningStrategyRunner(
         TelegramNotifier.sendAlert(entryMsg)
 
         TradingJournalService.logTrade(TradeJournalEntry(bestShortSym, bestShortLtp, 0.0, lotSize.toInt(), bestNetCredit, signal.action))
-    }
-
-    private suspend fun waitForNext5MinBoundary() {
-        val now = LocalDateTime.now(istZone)
-        val minuteOfHour = now.minute
-        val targetMinute = ((minuteOfHour / 5) + 1) * 5
-        
-        val target = if (targetMinute >= 60) {
-            now.plusHours(1).withMinute(0).withSecond(2).withNano(0)
-        } else {
-            now.withMinute(targetMinute).withSecond(2).withNano(0)
-        }
-
-        val millisToWait = Duration.between(LocalDateTime.now(istZone), target).toMillis()
-        if (millisToWait > 0) {
-            delay(millisToWait)
-        } else {
-            delay(5_000L)
-        }
     }
 
     private fun extractSpotLtp(quotes: JSONObject?, symbol: String): Double {

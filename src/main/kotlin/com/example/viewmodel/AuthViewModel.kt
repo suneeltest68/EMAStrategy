@@ -94,9 +94,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
-    suspend fun fetchOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int): JSONObject? {
+    suspend fun fetchOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int, isForLiveTrading: Boolean = false): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getOptionChain(appId, accessToken, symbol, strikeCount)
+            val result = repository.getOptionChain(appId, accessToken, symbol, strikeCount, isForLiveTrading = isForLiveTrading)
             if (result.isFailure) {
                 println("Option Chain Error for $symbol: ${result.exceptionOrNull()?.message}")
             }

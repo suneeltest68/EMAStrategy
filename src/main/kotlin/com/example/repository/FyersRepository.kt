@@ -133,11 +133,13 @@ class FyersRepository {
         }
     }
 
-    fun getOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int): Result<JSONObject> {
+    fun getOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int, isForLiveTrading: Boolean = false): Result<JSONObject> {
         val cacheKey = "optionchain_${symbol}_${strikeCount}"
-        val cached = readFromConsolidatedCache(derivativesCacheFile, cacheKey)
-        if (cached != null) {
-            return Result.success(cached)
+        if (!isForLiveTrading) {
+            val cached = readFromConsolidatedCache(derivativesCacheFile, cacheKey)
+            if (cached != null) {
+                return Result.success(cached)
+            }
         }
 
         return try {
