@@ -37,9 +37,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         )
     }
 
-    suspend fun fetchHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String,isForLiveTrading: Boolean = false): JSONObject? {
+    suspend fun fetchHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, rangeFrom, rangeTo,isForLiveTrading=isForLiveTrading)
+            val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, rangeFrom, rangeTo)
             if (result.isFailure) {
                 println("Historical Data Error for $symbol: ${result.exceptionOrNull()?.message}")
             }
@@ -61,7 +61,6 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
                     
                     val chunkFrom = currentStart.toString()
                     val chunkTo = currentEnd.toString()
-//                    println("Fetching Fyers history chunk: $chunkFrom to $chunkTo")
 
                     val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, chunkFrom, chunkTo)
                     if (result.isSuccess) {
@@ -94,9 +93,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
-    suspend fun fetchOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int, isForLiveTrading: Boolean = false): JSONObject? {
+    suspend fun fetchOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getOptionChain(appId, accessToken, symbol, strikeCount, isForLiveTrading = isForLiveTrading)
+            val result = repository.getOptionChain(appId, accessToken, symbol, strikeCount)
             if (result.isFailure) {
                 println("Option Chain Error for $symbol: ${result.exceptionOrNull()?.message}")
             }

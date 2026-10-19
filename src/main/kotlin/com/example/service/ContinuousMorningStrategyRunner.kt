@@ -174,7 +174,7 @@ class ContinuousMorningStrategyRunner(
         )
 
         // Fetch fresh live option chain (isForLiveTrading = true bypasses cache)
-        val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = true)
+        val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
             ?: throw IllegalStateException("Failed to fetch fresh live option chain for $indexSymbol")
         val optionsArray = if (optionChain.has("data")) {
             val dataObj = optionChain.getJSONObject("data")
@@ -206,7 +206,7 @@ class ContinuousMorningStrategyRunner(
         val resolvedExpiryDate = resolvedExpiryCache.getOrPut(expiryCacheKey) {
             var expiry = "Current Weekly Expiry"
             try {
-                val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = true)
+                val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
                 if (optionChain != null && optionChain.has("data")) {
                     val dataObj = optionChain.getJSONObject("data")
                     val expiryArray = dataObj.optJSONArray("expiryData") ?: dataObj.optJSONArray("expiry_dates")
@@ -258,7 +258,7 @@ class ContinuousMorningStrategyRunner(
         val optionType = if (signal.action == "BULL_PUT_SPREAD") "PE" else "CE"
 
         // Resolve Short Symbol (ATM) ONCE outside the loop to extract base expiry prefix locally
-        val shortSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), optionType, expiryIndex, isForLiveTrading = true)
+        val shortSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), optionType, expiryIndex)
         val strikeStr = atmStrike.toString()
         val baseExpiryPrefix = if (shortSym.contains(strikeStr)) {
             shortSym.substringBefore(strikeStr)
@@ -331,7 +331,7 @@ class ContinuousMorningStrategyRunner(
         val resolvedExpiryDate = resolvedExpiryCache.getOrPut(expiryCacheKey) {
             var expiry = "Current Weekly Expiry"
             try {
-                val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = true)
+                val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
                 if (optionChain != null && optionChain.has("data")) {
                     val dataObj = optionChain.getJSONObject("data")
                     val expiryArray = dataObj.optJSONArray("expiryData") ?: dataObj.optJSONArray("expiry_dates")
@@ -377,7 +377,7 @@ class ContinuousMorningStrategyRunner(
 
         val optionType = if (signal.action == "BULL_PUT_SPREAD") "PE" else "CE"
 
-        val shortSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), optionType, expiryIndex, isForLiveTrading = true)
+        val shortSym = OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), optionType, expiryIndex)
         val strikeStr = atmStrike.toString()
         val baseExpiryPrefix = if (shortSym.contains(strikeStr)) {
             shortSym.substringBefore(strikeStr)

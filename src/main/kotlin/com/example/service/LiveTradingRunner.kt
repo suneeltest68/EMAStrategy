@@ -149,7 +149,7 @@ class LiveTradingRunner(
                     continue
                 }
 
-                val latestHistory = viewModel.fetchHistoricalData(appId, token, "NSE:NIFTY50-INDEX", "1", warmupFrom, currentDate, isForLiveTrading = true)
+                val latestHistory = viewModel.fetchHistoricalData(appId, token, "NSE:NIFTY50-INDEX", "1", warmupFrom, currentDate)
                 if (latestHistory != null) {
                     val freshCandles = parseFyersCandles(latestHistory)
                     if (freshCandles.isNotEmpty()) {

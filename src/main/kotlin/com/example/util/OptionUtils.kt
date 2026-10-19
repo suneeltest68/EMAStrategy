@@ -16,11 +16,6 @@ data class ExpiredDerivativeResult(
 
 object OptionUtils {
 
-    private val optionChainCache = mutableMapOf<String, JSONObject>()
-    private val expiryCache = mutableMapOf<String, JSONObject>()
-    private val contractsCache = mutableMapOf<String, JSONObject>()
-    private val fnoHistoryCache = mutableMapOf<String, JSONObject>()
-
     /**
      * Identifies the At-The-Money (ATM) strike price given the current underlying spot price and strike interval.
      * - NIFTY strike interval: 50
@@ -54,32 +49,13 @@ object OptionUtils {
         indexSymbol: String,
         spotPrice: Double,
         optionType: String,
-        expiryIndex: Int = 0,
-        isForLiveTrading: Boolean = false
+        expiryIndex: Int = 0
     ): String {
         val strikeInterval = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true) || indexSymbol.contains("SENSEX", ignoreCase = true)) 100 else 50
         val atmStrike = calculateAtmStrike(spotPrice, strikeInterval)
 
-        val optionChain = if (isForLiveTrading) {
-            viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = true)
-                ?: throw IllegalStateException("Failed to fetch fresh live option chain from Fyers API for symbol $indexSymbol")
-        } else {
-            val cacheKey = indexSymbol
-            var chain = optionChainCache[cacheKey]
-            if (chain == null) {
-                var attempts = 0
-                while (attempts < 3 && chain == null) {
-                    kotlinx.coroutines.delay(500L * (attempts + 1))
-                    chain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, isForLiveTrading = false)
-                    attempts++
-                }
-                if (chain == null) {
-                    throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol after retries (Rate limit 429)")
-                }
-                optionChainCache[cacheKey] = chain
-            }
-            chain
-        }
+        val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
+            ?: throw IllegalStateException("Failed to fetch fresh live option chain from Fyers API for symbol $indexSymbol")
 
         var expiryDateStr: String? = null
         if (optionChain.has("data")) {
@@ -129,7 +105,6 @@ object OptionUtils {
             else -> "NSE:NIFTY"
         }
 
-        // First attempt: Search optionsChain array for exact matching contract with targetExpiryCode or isoDate
         if (optionChain.has("data")) {
             val dataObj = optionChain.getJSONObject("data")
             val optionsArray = dataObj.optJSONArray("optionsChain") ?: dataObj.optJSONArray("options")
@@ -153,15 +128,11 @@ object OptionUtils {
             }
         }
 
-        println("   • [DEBUG] Fetching Underlying Expired Contracts for Expiry: $expiryDateStr...")
-
-        // Second attempt: Return constructed symbol
         return "$underlyingPrefix$targetExpiryCode$atmStrike$optionType"
     }
 
     /**
      * Resolves the monthly option contract symbol (e.g. NSE:NIFTY26OCT24200CE).
-     * @param monthIndex 0 for current month, 1 for next month, etc.
      */
     suspend fun resolveMonthlyOptionSymbol(
         viewModel: com.example.viewmodel.AuthViewModel,
@@ -211,8 +182,7 @@ object OptionUtils {
     }
 
     /**
-     * Resolves and fetches historical 1-min candle data for an EXPIRED weekly option contract
-     * using Fyers' dedicated expired F&O APIs with in-memory caching.
+     * Resolves and fetches historical 1-min candle data for an EXPIRED weekly option contract.
      */
     suspend fun resolveAndFetchExpiredDerivativeCandles(
         viewModel: com.example.viewmodel.AuthViewModel,
@@ -229,14 +199,8 @@ object OptionUtils {
 
         val rangeFrom = LocalDate.parse(tradeDate).minusMonths(1).toString()
         val rangeTo = LocalDate.parse(tradeDate).plusDays(7).toString()
-        val expiryCacheKey = "$indexSymbol-$rangeFrom-$rangeTo"
 
-        var expiryJson = expiryCache[expiryCacheKey]
-        if (expiryJson == null) {
-//            println("   • [DEBUG] Resolving expiry dates for tradeDate=$tradeDate (range: $rangeFrom to $rangeTo)...")
-            expiryJson = viewModel.fetchHistoryExpiryDates(appId, token, indexSymbol, rangeFrom, rangeTo)
-            if (expiryJson != null) expiryCache[expiryCacheKey] = expiryJson
-        }
+        val expiryJson = viewModel.fetchHistoryExpiryDates(appId, token, indexSymbol, rangeFrom, rangeTo)
 
         var targetExpiry = tradeDate
         if (expiryJson != null && expiryJson.has("data")) {
@@ -261,12 +225,7 @@ object OptionUtils {
             }
         }
 
-        val contractsCacheKey = "$indexSymbol-$targetExpiry"
-        var contractsJson = contractsCache[contractsCacheKey]
-        if (contractsJson == null) {
-            contractsJson = viewModel.fetchHistoryUnderlyingSymbols(appId, token, indexSymbol, targetExpiry)
-            if (contractsJson != null) contractsCache[contractsCacheKey] = contractsJson
-        }
+        val contractsJson = viewModel.fetchHistoryUnderlyingSymbols(appId, token, indexSymbol, targetExpiry)
 
         var optionSymbol = ""
         if (contractsJson != null && contractsJson.has("data")) {
@@ -294,22 +253,15 @@ object OptionUtils {
             }
             optionSymbol = "$underlyingPrefix$targetExpiry$atmStrike$optionType"
         }
-        println("Trade date $tradeDate Expiry $targetExpiry ")
 
-
-        val fnoCacheKey = "$optionSymbol-$tradeDate"
-        var fnoHistory = fnoHistoryCache[fnoCacheKey]
-        if (fnoHistory == null) {
-            fnoHistory = viewModel.fetchHistoryFNOExpired(
-                appId = appId,
-                accessToken = token,
-                fnoSymbol = optionSymbol,
-                rangeFrom = tradeDate,
-                rangeTo = tradeDate,
-                resolution = "1"
-            )
-            if (fnoHistory != null) fnoHistoryCache[fnoCacheKey] = fnoHistory
-        }
+        val fnoHistory = viewModel.fetchHistoryFNOExpired(
+            appId = appId,
+            accessToken = token,
+            fnoSymbol = optionSymbol,
+            rangeFrom = tradeDate,
+            rangeTo = tradeDate,
+            resolution = "1"
+        )
 
         if (fnoHistory == null || !fnoHistory.has("candles") || fnoHistory.optJSONArray("candles")?.length() == 0) {
             throw IllegalStateException("Failed to fetch FNO expired history for $optionSymbol on $tradeDate.")
@@ -344,9 +296,6 @@ object OptionUtils {
             .sortedBy { if (it.epoch > 0) it.epoch else 0L }
     }
 
-    /**
-     * Parses an option chain JSONObject to find the exact option contract symbol matching strike and type (CE/PE).
-     */
     fun findOptionSymbolFromChain(optionChainJson: JSONObject, targetStrike: Int, optionType: String): String? {
         try {
             val optionsArray = optionChainJson.optJSONArray("options") ?: optionChainJson.optJSONArray("data") ?: return null
@@ -366,9 +315,10 @@ object OptionUtils {
         return null
     }
 
-    /**
-     * Extracts Last Traded Price (LTP) for a given symbol from Fyers GetStockQuotes response.
-     */
+    fun findOptionSymbolFromCase(optionChainJson: JSONObject, targetStrike: Int, optionType: String): String? {
+        return findOptionSymbolFromChain(optionChainJson, targetStrike, optionType)
+    }
+
     fun extractLtpFromQuotes(quotesJson: org.json.JSONObject, symbol: String): Double? {
         try {
             val dataArray = quotesJson.optJSONArray("d") ?: return null
