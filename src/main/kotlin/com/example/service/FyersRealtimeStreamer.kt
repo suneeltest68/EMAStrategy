@@ -13,6 +13,9 @@ class FyersRealtimeStreamer(
 ) : FyersSocketDelegate {
 
     private val fyersSocket = FyersSocket(3)
+    var isConnected = false
+        private set
+    private val subscribedSymbols = mutableSetOf<String>()
 
     init {
         val fyersClass = FyersClass.getInstance()
@@ -23,19 +26,25 @@ class FyersRealtimeStreamer(
 
     fun connectAndSubscribe(symbols: List<String>) {
         try {
+            subscribedSymbols.clear()
+            subscribedSymbols.addAll(symbols)
             println("🔌 Connecting to Fyers WebSocket (Lite Mode)...")
             fyersSocket.ConnectHSM(ChannelModes.LITE)
-            fyersSocket.SubscribeData(symbols)
-            println("📡 Subscribed to symbols via WebSocket: $symbols")
         } catch (e: Exception) {
-            println("❌ WebSocket connection/subscription error: ${e.message}")
+            println("❌ WebSocket connection error: ${e.message}")
         }
     }
 
     fun updateSubscription(symbols: List<String>) {
         try {
-            fyersSocket.SubscribeData(symbols)
-            println("📡 Updated WebSocket subscription: $symbols")
+            subscribedSymbols.clear()
+            subscribedSymbols.addAll(symbols)
+            if (isConnected) {
+                fyersSocket.SubscribeData(symbols)
+                println("📡 Updated WebSocket subscription: $symbols")
+            } else {
+                println("⏳ WebSocket not connected yet. Subscription queued: $symbols")
+            }
         } catch (e: Exception) {
             println("❌ WebSocket update subscription error: ${e.message}")
         }
@@ -76,10 +85,20 @@ class FyersRealtimeStreamer(
     
     override fun OnOpen(status: String?) {
         println("🟢 Fyers WebSocket Connected: $status")
+        isConnected = true
+        if (subscribedSymbols.isNotEmpty()) {
+            try {
+                fyersSocket.SubscribeData(subscribedSymbols.toList())
+                println("📡 Subscribed to queued symbols upon connection: $subscribedSymbols")
+            } catch (e: Exception) {
+                println("❌ WebSocket post-connection subscription error: ${e.message}")
+            }
+        }
     }
 
     override fun OnClose(status: String?) {
         println("🔴 Fyers WebSocket Closed: $status")
+        isConnected = false
     }
 
     override fun OnError(error: JSONObject?) {

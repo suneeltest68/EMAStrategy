@@ -85,15 +85,34 @@ object IronFlyStrategyConfig {
         appId: String,
         token: String,
         indexSymbol: String,
-        targetDate: LocalDate
+        targetDate: LocalDate,
+        useCache: Boolean = true
     ): DayOfWeek {
-        val rangeFrom = targetDate.minusDays(15).toString()
+        if (!useCache) {
+            try {
+                val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 15, useCache = false)
+                if (optionChain != null && optionChain.has("data")) {
+                    val dataObj = optionChain.getJSONObject("data")
+                    val expiries = dataObj.optJSONArray("expiryData") ?: dataObj.optJSONArray("expiry_dates")
+                    if (expiries != null && expiries.length() > 0) {
+                        val firstExp = expiries.optJSONObject(0)?.optString("date") ?: expiries.optString(0, "")
+                        val ld = parseExpiryDateString(firstExp)
+                        if (ld != null) {
+                            return ld.dayOfWeek
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        val rangeFrom = targetDate.minusDays(30).toString()
         val yesterday = LocalDate.now().minusDays(1)
-        val rawRangeTo = targetDate.plusDays(15)
-        val rangeTo = if (rawRangeTo.isAfter(yesterday)) yesterday.toString() else rawRangeTo.toString()
+        // Fyers API rule: range_to cannot be current date or a future date
+        val candidateRangeTo = targetDate.plusDays(15)
+        val rangeTo = if (candidateRangeTo.isAfter(yesterday)) yesterday.toString() else candidateRangeTo.toString()
         
         try {
-            val expiryJson = viewModel.fetchHistoryExpiryDates(appId, token, indexSymbol, rangeFrom, rangeTo)
+            val expiryJson = viewModel.fetchHistoryExpiryDates(appId, token, indexSymbol, rangeFrom, rangeTo, useCache = useCache)
             if (expiryJson != null && expiryJson.has("data")) {
                 val dataObj = expiryJson.getJSONObject("data")
                 val expiries = dataObj.optJSONObject("expiry_dates")?.optJSONArray("options")
@@ -153,12 +172,13 @@ object IronFlyStrategyConfig {
         viewModel: com.example.viewmodel.AuthViewModel,
         appId: String,
         token: String,
-        date: LocalDate
+        date: LocalDate,
+        useCache: Boolean = true
     ): String? {
         if (date.dayOfWeek == DayOfWeek.FRIDAY) return null
 
-        val niftyExpiryDay = getDynamicExpiryDay(viewModel, appId, token, "NSE:NIFTY50-INDEX", date)
-        val sensexExpiryDay = getDynamicExpiryDay(viewModel, appId, token, "BSE:SENSEX-INDEX", date)
+        val niftyExpiryDay = getDynamicExpiryDay(viewModel, appId, token, "NSE:NIFTY50-INDEX", date, useCache)
+        val sensexExpiryDay = getDynamicExpiryDay(viewModel, appId, token, "BSE:SENSEX-INDEX", date, useCache)
 
         val niftyTradeDays = setOf(niftyExpiryDay, niftyExpiryDay.minus(1))
         if (niftyTradeDays.contains(date.dayOfWeek)) {

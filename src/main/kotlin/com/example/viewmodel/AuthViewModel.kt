@@ -37,9 +37,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         )
     }
 
-    suspend fun fetchHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String): JSONObject? {
+    suspend fun fetchHistoricalData(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String, useCache: Boolean = true): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, rangeFrom, rangeTo)
+            val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, rangeFrom, rangeTo, useCache)
             if (result.isFailure) {
                 println("Historical Data Error for $symbol: ${result.exceptionOrNull()?.message}")
             }
@@ -47,7 +47,7 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
-    suspend fun fetchHistoricalDataInChunks(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String): JSONObject? {
+    suspend fun fetchHistoricalDataInChunks(appId: String, accessToken: String, symbol: String, resolution: String, rangeFrom: String, rangeTo: String, useCache: Boolean = true): JSONObject? {
         return withContext(Dispatchers.IO) {
             try {
                 val startLocalDate = java.time.LocalDate.parse(rangeFrom)
@@ -61,9 +61,8 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
                     
                     val chunkFrom = currentStart.toString()
                     val chunkTo = currentEnd.toString()
-//                    println("Fetching Fyers history chunk: $chunkFrom to $chunkTo")
 
-                    val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, chunkFrom, chunkTo)
+                    val result = repository.getHistoricalData(appId, accessToken, symbol, resolution, chunkFrom, chunkTo, useCache)
                     if (result.isSuccess) {
                         val json = result.getOrNull()
                         val candles = json?.optJSONArray("candles")
@@ -94,9 +93,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
-    suspend fun fetchOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int): JSONObject? {
+    suspend fun fetchOptionChain(appId: String, accessToken: String, symbol: String, strikeCount: Int, useCache: Boolean = true): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getOptionChain(appId, accessToken, symbol, strikeCount)
+            val result = repository.getOptionChain(appId, accessToken, symbol, strikeCount, useCache)
             if (result.isFailure) {
                 println("Option Chain Error for $symbol: ${result.exceptionOrNull()?.message}")
             }
@@ -104,9 +103,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
-    suspend fun fetchHistoryExpiryDates(appId: String, accessToken: String, symbol: String, rangeFrom: String, rangeTo: String): JSONObject? {
+    suspend fun fetchHistoryExpiryDates(appId: String, accessToken: String, symbol: String, rangeFrom: String, rangeTo: String, useCache: Boolean = true): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getHistoryExpiryDates(appId, accessToken, symbol, rangeFrom, rangeTo)
+            val result = repository.getHistoryExpiryDates(appId, accessToken, symbol, rangeFrom, rangeTo, useCache)
             if (result.isFailure) {
                 println("Expiry Dates Error: ${result.exceptionOrNull()?.message}")
             }
@@ -114,9 +113,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
-    suspend fun fetchHistoryUnderlyingSymbols(appId: String, accessToken: String, symbol: String, expiryDate: String): JSONObject? {
+    suspend fun fetchHistoryUnderlyingSymbols(appId: String, accessToken: String, symbol: String, expiryDate: String, useCache: Boolean = true): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getHistoryUnderlyingSymbols(appId, accessToken, symbol, expiryDate)
+            val result = repository.getHistoryUnderlyingSymbols(appId, accessToken, symbol, expiryDate, useCache)
             if (result.isFailure) {
                 println("Underlying Symbols Error: ${result.exceptionOrNull()?.message}")
             }
@@ -124,9 +123,9 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
-    suspend fun fetchHistoryFNOExpired(appId: String, accessToken: String, fnoSymbol: String, rangeFrom: String, rangeTo: String, resolution: String): JSONObject? {
+    suspend fun fetchHistoryFNOExpired(appId: String, accessToken: String, fnoSymbol: String, rangeFrom: String, rangeTo: String, resolution: String, useCache: Boolean = true): JSONObject? {
         return withContext(Dispatchers.IO) {
-            val result = repository.getHistoryFNOExpired(appId, accessToken, fnoSymbol, rangeFrom, rangeTo, resolution)
+            val result = repository.getHistoryFNOExpired(appId, accessToken, fnoSymbol, rangeFrom, rangeTo, resolution, useCache)
             if (result.isFailure) {
                 println("FNO Expired History Error for $fnoSymbol: ${result.exceptionOrNull()?.message}")
             }
