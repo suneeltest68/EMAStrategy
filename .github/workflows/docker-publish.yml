@@ -8,6 +8,7 @@ on:
       - master
       - sensex-nifty-option-selling-algo
       - feature/iron-fly
+      - morning-strategy
   workflow_dispatch:
 
 jobs:
