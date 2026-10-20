@@ -86,12 +86,6 @@ class IronFlyTradingRunner(
                     var position: IronFlyPosition? = null
                     val spotSymbol = if (selectedIndex.contains("SENSEX")) "BSE:SENSEX-INDEX" else "NSE:NIFTY50-INDEX"
 
-                    // Fetch option chain once at the start of entry window to get weekly expiry date
-                    val optionChain = viewModel.fetchOptionChain(appId, token, selectedIndex, 15, useCache = false)
-                        ?: throw IllegalStateException("Failed to fetch option chain for $selectedIndex")
-                    val expiryDateStr = OptionUtils.extractExpiryDateString(optionChain, expiryIndex)
-                    println("[IronFly] Weekly Expiry Date resolved: $expiryDateStr")
-
                     val tickMap = ConcurrentHashMap<String, Double>()
                     val liveStreamer = FyersRealtimeStreamer(appId, token) { symbol, ltp ->
                         if (ltp > 0.0) {
@@ -99,21 +93,46 @@ class IronFlyTradingRunner(
                         }
                     }
 
+                    // 1. Connect WebSocket first
                     liveStreamer.connectAndSubscribe(listOf(spotSymbol))
 
                     // Wait for WebSocket connection confirmation (OnOpen)
+                    println("⏳ Waiting for Fyers WebSocket connection...")
                     var connAttempts = 0
-                    while (!liveStreamer.isConnected && connAttempts < 20 && isActive) {
+                    while (!liveStreamer.isConnected && connAttempts < 30 && isActive) {
                         delay(500L)
                         connAttempts++
                     }
 
-                    // Wait for initial spot price tick via WebSocket
+                    if (!liveStreamer.isConnected) {
+                        throw IllegalStateException("Failed to establish Fyers WebSocket connection for streaming data.")
+                    }
+                    println("🟢 WebSocket confirmed connected. Proceeding to retrieve data...")
+
+                    // 2. Only retrieve option chain & spot price once WebSocket is connected
+                    val optionChain = viewModel.fetchOptionChain(appId, token, selectedIndex, 15, useCache = false)
+                        ?: throw IllegalStateException("Failed to fetch option chain for $selectedIndex")
+                    val expiryDateStr = OptionUtils.extractExpiryDateString(optionChain, expiryIndex)
+                    println("[IronFly] Weekly Expiry Date resolved: $expiryDateStr")
+
+                    // Wait for initial spot price tick via WebSocket or REST API fallback
                     var spotPrice = 0.0
+                    var spotAttempts = 0
                     while (spotPrice <= 0.0 && LocalTime.now(istZone).isBefore(entryWindowEnd) && isActive) {
                         spotPrice = tickMap[spotSymbol] ?: 0.0
                         if (spotPrice <= 0.0) {
+                            if (spotAttempts % 4 == 0) {
+                                try {
+                                    val spotQuotes = viewModel.fetchStockQuotes(appId, token, spotSymbol)
+                                    spotPrice = extractSpotLtp(spotQuotes, spotSymbol)
+                                    if (spotPrice > 0.0) {
+                                        println("[IronFly] Got spot price via REST API fallback: $spotPrice")
+                                        break
+                                    }
+                                } catch (_: Exception) {}
+                            }
                             delay(500L)
+                            spotAttempts++
                         }
                     }
 
@@ -352,5 +371,20 @@ class IronFlyTradingRunner(
         TelegramNotifier.sendAlert(eodMsg)
 
         TradingJournalService.logTrade(TradeJournalEntry(activePos.indexSymbol, 0.0, 0.0, lotSize.toInt(), totalRupees, reason))
+    }
+
+    private fun extractSpotLtp(quotes: JSONObject?, symbol: String): Double {
+        try {
+            val dataArray = quotes?.optJSONArray("d") ?: return 0.0
+            for (i in 0 until dataArray.length()) {
+                val item = dataArray.getJSONObject(i)
+                val name = item.optString("n", "")
+                if (name.equals(symbol, ignoreCase = true)) {
+                    val vObj = item.optJSONObject("v") ?: continue
+                    return vObj.optDouble("lp", 0.0)
+                }
+            }
+        } catch (_: Exception) {}
+        return 0.0
     }
 }
