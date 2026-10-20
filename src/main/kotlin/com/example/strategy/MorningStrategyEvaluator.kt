@@ -55,6 +55,28 @@ object MorningStrategyEvaluator {
         return profitDev + lossDev
     }
 
+    suspend fun fetchExactStandaloneMargin(
+        viewModel: com.example.viewmodel.AuthViewModel,
+        appId: String,
+        token: String,
+        shortSymbol: String,
+        longSymbol: String,
+        lotSize: Int
+    ): Double {
+        return try {
+            val marginLegs = listOf(
+                mapOf("symbol" to shortSymbol, "qty" to lotSize, "side" to -1, "type" to 1, "productType" to "MARGIN"),
+                mapOf("symbol" to longSymbol, "qty" to lotSize, "side" to 1, "type" to 1, "productType" to "MARGIN")
+            )
+            val marginJson = viewModel.fetchMargins(appId, token, marginLegs)
+            val dataObj = marginJson?.optJSONObject("data")
+            dataObj?.optDouble("total", 0.0) ?: dataObj?.optDouble("net", 0.0) ?: 0.0
+        } catch (e: Exception) {
+            println("❌ Failed to fetch exact margin from Fyers API: ${e.message}")
+            0.0
+        }
+    }
+
     fun evaluateSignal(
         optionsArray: JSONArray,
         monitoredStrikes: Set<Int>

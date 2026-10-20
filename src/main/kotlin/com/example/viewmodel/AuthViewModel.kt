@@ -143,6 +143,16 @@ class AuthViewModel(private val repository: FyersRepository = FyersRepository())
         }
     }
 
+    suspend fun fetchMargins(appId: String, accessToken: String, legs: List<Map<String, Any>>): JSONObject? {
+        return withContext(Dispatchers.IO) {
+            val result = repository.getMargins(appId, accessToken, legs)
+            if (result.isFailure) {
+                println("Margin API Error: ${result.exceptionOrNull()?.message}")
+            }
+            result.getOrNull()
+        }
+    }
+
     fun getCachedToken(): String? {
         return repository.getCachedToken()
     }

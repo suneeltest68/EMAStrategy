@@ -6,6 +6,10 @@ import com.tts.`in`.model.HistoryFNOExpiredModel
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.io.OutputStreamWriter
+import java.nio.charset.StandardCharsets
 
 class FyersRepository {
 
@@ -191,6 +195,51 @@ class FyersRepository {
                 Result.success(json)
             } else {
                 Result.failure(Exception("Stock Quotes Error: $error"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun getMargins(appId: String, accessToken: String, legs: List<Map<String, Any>>): Result<JSONObject> {
+        return try {
+            val urlString = "https://api-t1.fyers.in/api/v3/margins"
+            val url = URL(urlString)
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "$appId:$accessToken")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+
+            val payloadJson = JSONObject().apply {
+                val dataArray = org.json.JSONArray()
+                for (leg in legs) {
+                    val legObj = JSONObject().apply {
+                        put("symbol", leg["symbol"])
+                        put("qty", leg["qty"])
+                        put("side", leg["side"])
+                        put("type", leg["type"])
+                        put("productType", leg["productType"] ?: "MARGIN")
+                    }
+                    dataArray.put(legObj)
+                }
+                put("data", dataArray)
+            }
+
+            OutputStreamWriter(conn.outputStream, StandardCharsets.UTF_8).use { writer ->
+                writer.write(payloadJson.toString())
+                writer.flush()
+            }
+
+            val responseCode = conn.responseCode
+            val stream = if (responseCode in 200..299) conn.inputStream else conn.errorStream
+            val responseStr = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
+            val jsonResponse = JSONObject(responseStr)
+
+            if (responseCode in 200..299 && jsonResponse.optString("s") == "ok") {
+                Result.success(jsonResponse)
+            } else {
+                Result.failure(Exception("Margin API Error: $responseStr"))
             }
         } catch (e: Exception) {
             Result.failure(e)
