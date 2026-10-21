@@ -73,6 +73,13 @@ class ContinuousMorningStrategyRunner(
                 val windowKey = "$selectedIndex-$dateStr"
                 val lastAlertSlot = lastAlertWindows[windowKey] ?: -1
 
+                // If we already alerted for this 5-minute window slot, stop making API calls until the next window!
+                if (currentWindowSlot == lastAlertSlot) {
+                    println("ℹ️ [MorningAlertBot] Already alerted for 5-min window slot $currentWindowSlot. Pausing API calls until next window...")
+                    delay(15_000L)
+                    continue
+                }
+
                 println("🔍 [Continuous Check] Evaluating Morning Strategy for $selectedIndex at $currentTime...")
                 try {
                     val evalResult = evaluateSignalWithData(selectedIndex)
@@ -124,9 +131,7 @@ class ContinuousMorningStrategyRunner(
                                 println("❌ [Telegram Error] Failed to generate/send OI chart photo: ${e.message}")
                             }
 
-                            println("⏳ [MorningAlertBot] Alert sent for window slot $currentWindowSlot. Waiting for next 5-min window to re-continue strategy scanning...")
-                        } else {
-                            println("ℹ️ [Continuous Check] Strategy found for current 5-min window (already alerted). Waiting for next 5-min window...")
+                            println("⏳ [MorningAlertBot] Alert sent for window slot $currentWindowSlot. Pausing API calls until next 5-min window...")
                         }
                     } else {
                         println("ℹ️ [Continuous Check] No strategy trigger met at $currentTime. Retrying in 3s...")

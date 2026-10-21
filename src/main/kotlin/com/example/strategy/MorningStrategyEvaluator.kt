@@ -115,13 +115,13 @@ object MorningStrategyEvaluator {
         val maxOi = maxOiItem.openInterest
         val thresholdOi = (maxOi * 0.80).toLong()
 
-        // 2. Check if the Max OI strike is within the 5 monitored strikes (ATM ± 2 intervals)
-        val signal = if (monitoredStrikes.contains(maxOiItem.strike)) {
+        // 2. Case B: If Max OI strike itself is within the 5 monitored strikes, decide then and there
+        if (monitoredStrikes.contains(maxOiItem.strike)) {
             val isPut = maxOiItem.optionType.equals("PE", ignoreCase = true) || maxOiItem.symbol.endsWith("PE")
             val dominatingType = if (isPut) "PUT" else "CALL"
             val action = if (isPut) "BULL_PUT_SPREAD" else "BEAR_CALL_SPREAD"
 
-            MorningStrategySignal(
+            val signal = MorningStrategySignal(
                 action = action,
                 maxOiStrike = maxOiItem.strike,
                 maxOi = maxOi,
@@ -132,20 +132,44 @@ object MorningStrategyEvaluator {
                 triggerSymbol = maxOiItem.symbol,
                 reason = "Max OI strike ${maxOiItem.strike} (${maxOiItem.optionType}) with ${maxOiItem.openInterest} OI is within monitored 5 strikes"
             )
-        } else {
-            MorningStrategySignal(
-                action = "NO_TRADE",
-                maxOiStrike = maxOiItem.strike,
-                maxOi = maxOi,
-                triggerStrike = 0,
-                triggerStrikeOi = 0L,
-                thresholdOi = thresholdOi,
-                dominantType = "",
-                triggerSymbol = "",
-                reason = "Max OI strike ${maxOiItem.strike} is outside the 5 monitored strikes"
-            )
+            return MorningStrategyEvaluationResult(signal, allStrikesData)
         }
 
-        return MorningStrategyEvaluationResult(signal, allStrikesData)
+        // 3. Case A: If Max OI strike is outside, check if any of the 5 monitored strikes reaches >= 80% of Max OI
+        val monitoredStrikesData = allStrikesData.filter { monitoredStrikes.contains(it.strike) }
+        for (item in monitoredStrikesData) {
+            if (item.openInterest >= thresholdOi) {
+                val isPut = item.optionType.equals("PE", ignoreCase = true) || item.symbol.endsWith("PE")
+                val dominatingType = if (isPut) "PUT" else "CALL"
+                val action = if (isPut) "BULL_PUT_SPREAD" else "BEAR_CALL_SPREAD"
+
+                val signal = MorningStrategySignal(
+                    action = action,
+                    maxOiStrike = maxOiItem.strike,
+                    maxOi = maxOi,
+                    triggerStrike = item.strike,
+                    triggerStrikeOi = item.openInterest,
+                    thresholdOi = thresholdOi,
+                    dominantType = dominatingType,
+                    triggerSymbol = item.symbol,
+                    reason = "Monitored strike ${item.strike} reached ${item.openInterest} OI (>= 80% of Max OI $maxOi at strike ${maxOiItem.strike})"
+                )
+                return MorningStrategyEvaluationResult(signal, allStrikesData)
+            }
+        }
+
+        // 4. No signal triggered
+        val noSignal = MorningStrategySignal(
+            action = "NO_TRADE",
+            maxOiStrike = maxOiItem.strike,
+            maxOi = maxOi,
+            triggerStrike = 0,
+            triggerStrikeOi = 0L,
+            thresholdOi = thresholdOi,
+            dominantType = "",
+            triggerSymbol = "",
+            reason = "Max OI is at ${maxOiItem.strike} (outside 5 strikes) and 80% threshold ($thresholdOi) not met by any monitored strike"
+        )
+        return MorningStrategyEvaluationResult(noSignal, allStrikesData)
     }
 }
