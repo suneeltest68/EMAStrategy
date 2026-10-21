@@ -119,7 +119,7 @@ object FyersAuthDaemon {
             viewModel.prepareLoginUrl(appId, redirectUri)
             val loginUrl = viewModel.authState.value.loginUrl
             
-            TelegramNotifier.sendAlert("⚠️ [NIFTY + SENSEX OTM4 Strangle] New trading day started. Please login & authorize:\n$loginUrl")
+            TelegramNotifier.sendAlert("⚠️ [Morning Strategy TMS] New trading day started. Please login & authorize:\n$loginUrl")
 
             authCodeDeferred = CompletableDeferred()
             val localDeferred = authCodeDeferred
