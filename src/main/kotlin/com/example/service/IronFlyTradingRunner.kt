@@ -52,13 +52,13 @@ class IronFlyTradingRunner(
                     val entryWindowStart = LocalTime.of(11, 0)
                     val entryWindowEnd = LocalTime.of(11, 30)
                     val squareOffTime = LocalTime.of(14, 50)
-                    val marketClose = LocalTime.of(15, 30)
+                    val marketClose = LocalTime.of(14, 52)
 
                     if (currentTime.isBefore(entryWindowStart)) {
                         val targetEntry = LocalDateTime.of(today, entryWindowStart)
                         val millisToWait = Duration.between(LocalDateTime.now(istZone), targetEntry).toMillis()
                         if (millisToWait > 0) {
-                            println("[IronFly] Waiting for entry window (13:30). Sleeping ${millisToWait / 1000}s...")
+                            println("[IronFly] Waiting for entry window (11:00). Sleeping ${millisToWait / 1000}s...")
                             delay(min(millisToWait, 60_000L))
                         } else {
                             delay(1000L)
@@ -273,27 +273,35 @@ class IronFlyTradingRunner(
                         // Check Stop-Loss on sold legs (SL = entry * 1.4)
                         if (!activePos.soldPe.isClosed && soldPeLtp >= activePos.soldPe.currentSl) {
                             activePos.soldPe.isClosed = true
+                            activePos.soldPe.exitPrice = soldPeLtp
                             activePos.buyPeHedge.isClosed = true
-                            activePos.soldCe.currentSl = activePos.soldCe.entryPrice // Move CE SL to cost
-                            val slMsg = "🛑 [IronFly SL HIT] Sold PE hit SL ($soldPeLtp >= ${activePos.soldPe.currentSl}). Closed PE legs & moved CE SL to cost."
+                            activePos.buyPeHedge.exitPrice = buyPeLtp
+
+                            val slMsg = "🛑 [IronFly SL HIT] Sold PE hit SL ($soldPeLtp >= ${activePos.soldPe.currentSl}). Squaring off Iron Fly."
                             println(slMsg)
-                            scope.launch { TelegramNotifier.sendAlert(slMsg) }
+                            TelegramNotifier.sendAlert(slMsg)
+                            squareOffIronFly(activePos, ltpMap, effectiveLotSize, "SL_HIT_PE")
+                            break
                         }
 
                         if (!activePos.soldCe.isClosed && soldCeLtp >= activePos.soldCe.currentSl) {
                             activePos.soldCe.isClosed = true
+                            activePos.soldCe.exitPrice = soldCeLtp
                             activePos.buyCeHedge.isClosed = true
-                            activePos.soldPe.currentSl = activePos.soldPe.entryPrice // Move PE SL to cost
-                            val slMsg = "🛑 [IronFly SL HIT] Sold CE hit SL ($soldCeLtp >= ${activePos.soldCe.currentSl}). Closed CE legs & moved PE SL to cost."
+                            activePos.buyCeHedge.exitPrice = buyCeLtp
+
+                            val slMsg = "🛑 [IronFly SL HIT] Sold CE hit SL ($soldCeLtp >= ${activePos.soldCe.currentSl}). Squaring off Iron Fly."
                             println(slMsg)
-                            scope.launch { TelegramNotifier.sendAlert(slMsg) }
+                            TelegramNotifier.sendAlert(slMsg)
+                            squareOffIronFly(activePos, ltpMap, effectiveLotSize, "SL_HIT_CE")
+                            break
                         }
 
                         // Check Profit Target: ₹1,200 fixed profit target
-                        val cePnl = if (activePos.soldCe.isClosed) 0.0 else (activePos.soldCe.entryPrice - soldCeLtp)
-                        val buyCePnl = if (activePos.buyCeHedge.isClosed) 0.0 else (buyCeLtp - activePos.buyCeHedge.entryPrice)
-                        val pePnl = if (activePos.soldPe.isClosed) 0.0 else (activePos.soldPe.entryPrice - soldPeLtp)
-                        val buyPePnl = if (activePos.buyPeHedge.isClosed) 0.0 else (buyPeLtp - activePos.buyPeHedge.entryPrice)
+                        val cePnl = (activePos.soldCe.entryPrice - soldCeLtp)
+                        val buyCePnl = (buyCeLtp - activePos.buyCeHedge.entryPrice)
+                        val pePnl = (activePos.soldPe.entryPrice - soldPeLtp)
+                        val buyPePnl = (buyPeLtp - activePos.buyPeHedge.entryPrice)
 
                         val totalMtm = (cePnl + buyCePnl + pePnl + buyPePnl) * effectiveLotSize
                         val targetProfit = 1200.0
@@ -301,12 +309,9 @@ class IronFlyTradingRunner(
                         if (totalMtm >= targetProfit) {
                             val tpMsg = "💰 [IronFly PROFIT TARGET HIT] MTM Profit: ₹${String.format("%.2f", totalMtm)} >= ₹1,200 target. Exiting all legs!"
                             println(tpMsg)
-                            scope.launch {
-                                TelegramNotifier.sendAlert(tpMsg)
-                                squareOffIronFly(activePos, ltpMap, effectiveLotSize, "PROFIT_TARGET_1200")
-                            }
-                            activePos.soldCe.isClosed = true
-                            activePos.soldPe.isClosed = true
+                            TelegramNotifier.sendAlert(tpMsg)
+                            squareOffIronFly(activePos, ltpMap, effectiveLotSize, "PROFIT_TARGET_1200")
+                            break
                         }
 
                         if (activePos.soldCe.isClosed && activePos.soldPe.isClosed) {
@@ -340,10 +345,10 @@ class IronFlyTradingRunner(
         val soldPeLtp = ltpMap[activePos.soldPe.symbol] ?: activePos.soldPe.entryPrice
         val buyPeLtp = ltpMap[activePos.buyPeHedge.symbol] ?: activePos.buyPeHedge.entryPrice
 
-        val cePnlPts = if (activePos.soldCe.isClosed) 0.0 else (activePos.soldCe.entryPrice - soldCeLtp)
-        val buyCePnlPts = if (activePos.buyCeHedge.isClosed) 0.0 else (buyCeLtp - activePos.buyCeHedge.entryPrice)
-        val pePnlPts = if (activePos.soldPe.isClosed) 0.0 else (activePos.soldPe.entryPrice - soldPeLtp)
-        val buyPePnlPts = if (activePos.buyPeHedge.isClosed) 0.0 else (buyPeLtp - activePos.buyPeHedge.entryPrice)
+        val cePnlPts = if (activePos.soldCe.isClosed) (activePos.soldCe.entryPrice - activePos.soldCe.exitPrice) else (activePos.soldCe.entryPrice - soldCeLtp)
+        val buyCePnlPts = if (activePos.buyCeHedge.isClosed) (activePos.buyCeHedge.exitPrice - activePos.buyCeHedge.entryPrice) else (buyCeLtp - activePos.buyCeHedge.entryPrice)
+        val pePnlPts = if (activePos.soldPe.isClosed) (activePos.soldPe.entryPrice - activePos.soldPe.exitPrice) else (activePos.soldPe.entryPrice - soldPeLtp)
+        val buyPePnlPts = if (activePos.buyPeHedge.isClosed) (activePos.buyPeHedge.exitPrice - activePos.buyPeHedge.entryPrice) else (buyPeLtp - activePos.buyPeHedge.entryPrice)
 
         val totalPnlPts = cePnlPts + buyCePnlPts + pePnlPts + buyPePnlPts
         val totalRupees = totalPnlPts * lotSize
