@@ -120,29 +120,41 @@ class IronFlyTradingRunner(
                     val expiryDateStr = OptionUtils.extractExpiryDateString(optionChain, expiryIndex)
                     println("[IronFly] Weekly Expiry Date resolved: $expiryDateStr")
 
-                    // Wait for initial spot price tick via WebSocket or REST API fallback
+                    // Wait for initial spot price tick via WebSocket, quotes REST fallback, or historical fallback
                     var spotPrice = 0.0
                     var spotAttempts = 0
                     while (spotPrice <= 0.0 && LocalTime.now(istZone).isBefore(entryWindowEnd) && isActive) {
                         spotPrice = tickMap[spotSymbol] ?: 0.0
                         if (spotPrice <= 0.0) {
-                            if (spotAttempts % 4 == 0) {
+                            if (spotAttempts % 2 == 0) {
                                 try {
                                     val spotQuotes = viewModel.fetchStockQuotes(appId, token, spotSymbol)
                                     spotPrice = extractSpotLtp(spotQuotes, spotSymbol)
-                                    if (spotPrice > 0.0) {
-                                        println("[IronFly] Got spot price via REST API fallback: $spotPrice")
-                                        break
+                                } catch (_: Exception) {}
+                            }
+                            if (spotPrice <= 0.0 && spotAttempts % 5 == 0) {
+                                try {
+                                    val spotHist = viewModel.fetchHistoricalData(appId, token, spotSymbol, "1", today.toString(), today.toString())
+                                    if (spotHist != null && spotHist.has("candles")) {
+                                        val candles = parseFyersCandles(spotHist)
+                                        if (candles.isNotEmpty()) {
+                                            spotPrice = candles.last().close
+                                            println("[IronFly] Got spot price via historical REST fallback: $spotPrice")
+                                        }
                                     }
                                 } catch (_: Exception) {}
                             }
-                            delay(500L)
+                            delay(1000L)
                             spotAttempts++
                         }
                     }
 
                     if (spotPrice <= 0.0) {
-                        throw IllegalStateException("Failed to get spot price for $spotSymbol")
+                        val errNotice = "⚠️ [IronFly] Failed to get spot price for $spotSymbol. Retrying..."
+                        println(errNotice)
+                        scope.launch { TelegramNotifier.sendAlert(errNotice) }
+                        delay(10_000L)
+                        continue
                     }
                     println("[IronFly] Initial Spot Price of $spotSymbol: $spotPrice")
 
