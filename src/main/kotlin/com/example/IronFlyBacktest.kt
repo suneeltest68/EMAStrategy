@@ -36,7 +36,7 @@ fun main() {
     val viewModel = AuthViewModel()
     val scanner = Scanner(System.`in`)
 
-    println("=== Weekly-Expiry Iron Fly Strategy Backtest Tool ===")
+    println("=== Weekly-Expiry Iron Fly Strategy Backtest Tool (Strict 5s Data) ===")
     val appId = System.getenv("FYERS_APP_ID") ?: dotenv["FYERS_APP_ID"] ?: ""
     val secretKey = System.getenv("FYERS_SECRET_KEY") ?: dotenv["FYERS_SECRET_KEY"] ?: ""
     val redirectUri = System.getenv("FYERS_REDIRECT_URI") ?: dotenv["FYERS_REDIRECT_URI"] ?: "https://trade.fyers.in/api-login/redirect-uri/index.html"
@@ -70,35 +70,8 @@ fun main() {
     }
 
     runBlocking {
-        runIronFlyBacktest(viewModel, appId, token, "2026-10-12", "2026-10-12")
+        runIronFlyBacktest(viewModel, appId, token, "2026-10-01", "2026-10-31")
     }
-}
-
-fun expandTo5SecondCandles(candles: List<Candle>): List<Candle> {
-    if (candles.isEmpty()) return emptyList()
-    val expanded = mutableListOf<Candle>()
-    for (i in 0 until candles.size - 1) {
-        val curr = candles[i]
-        val next = candles[i + 1]
-        val currEpoch = curr.epoch
-        val nextEpoch = next.epoch
-        val timeDiff = nextEpoch - currEpoch
-        if (timeDiff <= 60L && timeDiff > 0L) {
-            val steps = 12 // 60s / 5s = 12 steps
-            val priceStep = (next.close - curr.close) / steps.toDouble()
-            for (s in 0 until steps) {
-                val stepEpoch = currEpoch + (s * 5L)
-                val stepPrice = curr.close + (s * priceStep)
-                val zdt = java.time.Instant.ofEpochSecond(stepEpoch).atZone(java.time.ZoneId.of("Asia/Kolkata"))
-                val timeStr = zdt.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
-                expanded.add(Candle(timestamp = timeStr, open = stepPrice, high = stepPrice, low = stepPrice, close = stepPrice, epoch = stepEpoch))
-            }
-        } else {
-            expanded.add(curr)
-        }
-    }
-    expanded.add(candles.last())
-    return expanded
 }
 
 suspend fun runIronFlyBacktest(
@@ -109,7 +82,7 @@ suspend fun runIronFlyBacktest(
     endDateStr: String
 ) {
     println("\n==============================================================")
-    println("STARTING WEEKLY EXPIRY IRON FLY BACKTEST FOR TODAY ($startDateStr) [ATM STRIKE ONLY]")
+    println("STARTING WEEKLY EXPIRY IRON FLY BACKTEST ($startDateStr to $endDateStr) [STRICT 5s DATA]")
     println("==============================================================\n")
 
     val startDate = LocalDate.parse(startDateStr)
@@ -134,7 +107,7 @@ suspend fun runIronFlyBacktest(
             continue
         }
 
-        val indexSymbol = IronFlyStrategyConfig.getEligibleIndexForDate(viewModel, appId, token, currDate)
+        val indexSymbol = IronFlyStrategyConfig.getEligibleIndexForDate(viewModel, appId, token, currDate, useCache = false)
         if (indexSymbol == null) {
             println("[$currDate] No eligible index to trade today.")
             currDate = currDate.plusDays(1)
@@ -148,18 +121,18 @@ suspend fun runIronFlyBacktest(
 
         try {
             val dateStr = currDate.toString()
-            val spotHistory = viewModel.fetchHistoricalData(appId, token, indexSymbol, "1", dateStr, dateStr)
-            if (spotHistory == null || !spotHistory.has("candles")) {
-                println("  • Failed to fetch index candles for $dateStr")
+            val spotHistory = viewModel.fetchHistoricalData(appId, token, indexSymbol, "5S", dateStr, dateStr)
+            if (spotHistory == null || !spotHistory.has("candles") || spotHistory.optJSONArray("candles")?.length() == 0) {
+                println("  • Failed to fetch strict 5s index candles for $dateStr")
                 currDate = currDate.plusDays(1)
                 continue
             }
 
-            val spotCandles = expandTo5SecondCandles(parseFyersCandles(spotHistory))
+            val spotCandles = parseFyersCandles(spotHistory)
             val searchSpotCandles = spotCandles.filter { it.timestamp.substring(11, 16) >= "11:00" && it.timestamp.substring(11, 16) <= "11:30" }
 
             if (searchSpotCandles.isEmpty()) {
-                println("  • No spot candles found in 11:00 - 11:30 window for $dateStr")
+                println("  • No 5s spot candles found in 11:00 - 11:30 window for $dateStr")
                 currDate = currDate.plusDays(1)
                 continue
             }
@@ -168,87 +141,79 @@ suspend fun runIronFlyBacktest(
             val strikeInterval = if (indexSymbol.contains("SENSEX")) 100 else 50
             val hedgeOffset = if (indexSymbol.contains("SENSEX")) 400 else 200
 
-            val expiryDateStr = dateStr
-            println("📅 [Expiry Info] Index: $indexSymbol | Trade Date: $dateStr | Weekly Expiry Date: $expiryDateStr")
+            val firstSpot = searchSpotCandles.first().close
+            val atmStrike = OptionUtils.calculateAtmStrike(firstSpot, strikeInterval)
 
-            val entrySearchTimes = searchSpotCandles.map { it.timestamp }
+            val expiryDateStr = dateStr
+            println("📅 [Expiry Info] Index: $indexSymbol | Trade Date: $dateStr | ATM Strike: $atmStrike")
+
+            val cSym = if (isToday) {
+                OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), "CE", expiryIndex = 0)
+            } else {
+                OptionUtils.resolveAndFetchExpiredDerivativeCandles(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), "CE", dateStr, expiryIndex = 0).symbol
+            }
+            val pSym = if (isToday) {
+                OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), "PE", expiryIndex = 0)
+            } else {
+                OptionUtils.resolveAndFetchExpiredDerivativeCandles(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), "PE", dateStr, expiryIndex = 0).symbol
+            }
+            val bCeSym = if (isToday) {
+                OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, (atmStrike + hedgeOffset).toDouble(), "CE", expiryIndex = 0)
+            } else {
+                OptionUtils.resolveAndFetchExpiredDerivativeCandles(viewModel, appId, token, indexSymbol, (atmStrike + hedgeOffset).toDouble(), "CE", dateStr, expiryIndex = 0).symbol
+            }
+            val bPeSym = if (isToday) {
+                OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, (atmStrike - hedgeOffset).toDouble(), "PE", expiryIndex = 0)
+            } else {
+                OptionUtils.resolveAndFetchExpiredDerivativeCandles(viewModel, appId, token, indexSymbol, (atmStrike - hedgeOffset).toDouble(), "PE", dateStr, expiryIndex = 0).symbol
+            }
+
+            println("  • [INFO] Fetching 5S historical candles for 4 legs...")
+            val results = withContext(Dispatchers.IO) {
+                val c = async {
+                    if (isToday) viewModel.fetchHistoricalData(appId, token, cSym, "5S", dateStr, dateStr)
+                    else viewModel.fetchHistoryFNOExpired(appId, token, cSym, dateStr, dateStr, "5S")
+                }
+                val p = async {
+                    if (isToday) viewModel.fetchHistoricalData(appId, token, pSym, "5S", dateStr, dateStr)
+                    else viewModel.fetchHistoryFNOExpired(appId, token, pSym, dateStr, dateStr, "5S")
+                }
+                val bc = async {
+                    if (isToday) viewModel.fetchHistoricalData(appId, token, bCeSym, "5S", dateStr, dateStr)
+                    else viewModel.fetchHistoryFNOExpired(appId, token, bCeSym, dateStr, dateStr, "5S")
+                }
+                val bp = async {
+                    if (isToday) viewModel.fetchHistoricalData(appId, token, bPeSym, "5S", dateStr, dateStr)
+                    else viewModel.fetchHistoryFNOExpired(appId, token, bPeSym, dateStr, dateStr, "5S")
+                }
+                listOf(c.await(), p.await(), bc.await(), bp.await())
+            }
+
+            val ceCandlesFull = results[0]?.let { parseFyersCandles(it) } ?: emptyList()
+            val peCandlesFull = results[1]?.let { parseFyersCandles(it) } ?: emptyList()
+            val bCeCandlesFull = results[2]?.let { parseFyersCandles(it) } ?: emptyList()
+            val bPeCandlesFull = results[3]?.let { parseFyersCandles(it) } ?: emptyList()
+
             var soldCe: IronFlyLeg? = null
             var buyCe: IronFlyLeg? = null
             var soldPe: IronFlyLeg? = null
             var buyPe: IronFlyLeg? = null
             var entryTimestamp = ""
-            var ceSymbol = ""
-            var peSymbol = ""
-            var buyCeSymbol = ""
-            var buyPeSymbol = ""
 
-            println("\n--------------------------------------------------------------------------------------------------------")
-            println("ENTRY WINDOW SEARCH (11:00 AM - 11:30 AM, checking ATM strike only every 5s):")
-            println("--------------------------------------------------------------------------------------------------------")
-
-            outer@ for (t in entrySearchTimes) {
-                val spotC = spotCandles.firstOrNull { it.timestamp == t }?.close ?: continue
-                val atmStrike = OptionUtils.calculateAtmStrike(spotC, strikeInterval)
-
-                val cSym = if (isToday) {
-                    OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), "CE", expiryIndex = 0)
-                } else {
-                    OptionUtils.resolveAndFetchExpiredDerivativeCandles(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), "CE", dateStr, expiryIndex = 0).symbol
-                }
-                val pSym = if (isToday) {
-                    OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), "PE", expiryIndex = 0)
-                } else {
-                    OptionUtils.resolveAndFetchExpiredDerivativeCandles(viewModel, appId, token, indexSymbol, atmStrike.toDouble(), "PE", dateStr, expiryIndex = 0).symbol
-                }
-
-                val (cHist, pHist) = withContext(Dispatchers.IO) {
-                    val c = async { viewModel.fetchHistoricalData(appId, token, cSym, "1", dateStr, dateStr) }
-                    val p = async { viewModel.fetchHistoricalData(appId, token, pSym, "1", dateStr, dateStr) }
-                    Pair(c.await(), p.await())
-                }
-
-                val cCandles = if (cHist != null) expandTo5SecondCandles(parseFyersCandles(cHist)) else emptyList()
-                val pCandles = if (pHist != null) expandTo5SecondCandles(parseFyersCandles(pHist)) else emptyList()
-
-                val ceP = cCandles.firstOrNull { it.timestamp == t }?.close ?: continue
-                val peP = pCandles.firstOrNull { it.timestamp == t }?.close ?: continue
+            val entrySearchTimes = searchSpotCandles.map { it.timestamp }
+            for (t in entrySearchTimes) {
+                val ceP = ceCandlesFull.firstOrNull { it.timestamp == t }?.close ?: continue
+                val peP = peCandlesFull.firstOrNull { it.timestamp == t }?.close ?: continue
                 val gap = IronFlyStrategyConfig.calculatePremiumGap(ceP, peP)
 
-                println("⏱️ [$t] ATM Strike: $atmStrike | CE: $cSym (@ ${String.format("%.2f", ceP)}) | PE: $pSym (@ ${String.format("%.2f", peP)}) | Premium Gap: ${String.format("%.2f", gap)}%")
-
                 if (gap <= 15.0) {
-                    val bCeSym = if (isToday) {
-                        OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, (atmStrike + hedgeOffset).toDouble(), "CE", expiryIndex = 0)
-                    } else {
-                        OptionUtils.resolveAndFetchExpiredDerivativeCandles(viewModel, appId, token, indexSymbol, (atmStrike + hedgeOffset).toDouble(), "CE", dateStr, expiryIndex = 0).symbol
-                    }
-                    val bPeSym = if (isToday) {
-                        OptionUtils.resolveWeeklyOptionSymbol(viewModel, appId, token, indexSymbol, (atmStrike - hedgeOffset).toDouble(), "PE", expiryIndex = 0)
-                    } else {
-                        OptionUtils.resolveAndFetchExpiredDerivativeCandles(viewModel, appId, token, indexSymbol, (atmStrike - hedgeOffset).toDouble(), "PE", dateStr, expiryIndex = 0).symbol
-                    }
+                    val buyCeP = bCeCandlesFull.firstOrNull { it.timestamp == t }?.close ?: 10.0
+                    val buyPeP = bPeCandlesFull.firstOrNull { it.timestamp == t }?.close ?: 10.0
 
-                    val (bCeHist, bPeHist) = withContext(Dispatchers.IO) {
-                        val bc = async { viewModel.fetchHistoricalData(appId, token, bCeSym, "1", dateStr, dateStr) }
-                        val bp = async { viewModel.fetchHistoricalData(appId, token, bPeSym, "1", dateStr, dateStr) }
-                        Pair(bc.await(), bp.await())
-                    }
-
-                    val bCeCandles = if (bCeHist != null) expandTo5SecondCandles(parseFyersCandles(bCeHist)) else emptyList()
-                    val bPeCandles = if (bPeHist != null) expandTo5SecondCandles(parseFyersCandles(bPeHist)) else emptyList()
-
-                    val buyCeP = bCeCandles.firstOrNull { it.timestamp == t }?.close ?: 10.0
-                    val buyPeP = bPeCandles.firstOrNull { it.timestamp == t }?.close ?: 10.0
-
-                    ceSymbol = cSym
-                    peSymbol = pSym
-                    buyCeSymbol = bCeSym
-                    buyPeSymbol = bPeSym
-
-                    soldCe = IronFlyLeg(ceSymbol, "SELL_CE", atmStrike.toDouble(), ceP, ceP * 1.4)
-                    buyCe = IronFlyLeg(buyCeSymbol, "BUY_CE", (atmStrike + hedgeOffset).toDouble(), buyCeP, 0.0)
-                    soldPe = IronFlyLeg(peSymbol, "SELL_PE", atmStrike.toDouble(), peP, peP * 1.4)
-                    buyPe = IronFlyLeg(buyPeSymbol, "BUY_PE", (atmStrike - hedgeOffset).toDouble(), buyPeP, 0.0)
+                    soldCe = IronFlyLeg(cSym, "SELL_CE", atmStrike.toDouble(), ceP, ceP * 1.4)
+                    buyCe = IronFlyLeg(bCeSym, "BUY_CE", (atmStrike + hedgeOffset).toDouble(), buyCeP, 0.0)
+                    soldPe = IronFlyLeg(pSym, "SELL_PE", atmStrike.toDouble(), peP, peP * 1.4)
+                    buyPe = IronFlyLeg(bPeSym, "BUY_PE", (atmStrike - hedgeOffset).toDouble(), buyPeP, 0.0)
                     entryTimestamp = t
 
                     println("\n--------------------------------------------------------------------------------------------------------")
@@ -259,7 +224,7 @@ suspend fun runIronFlyBacktest(
                     println("  3. [ORDER - SELL]     ${soldPe.symbol} @ ${String.format("%.2f", soldPe.entryPrice)} | Initial SL: ${String.format("%.2f", soldPe.currentSl)}")
                     println("  4. [ORDER - BUY HEDGE] ${buyPe.symbol} @ ${String.format("%.2f", buyPe.entryPrice)}")
                     println("--------------------------------------------------------------------------------------------------------")
-                    break@outer
+                    break
                 }
             }
 
@@ -269,34 +234,16 @@ suspend fun runIronFlyBacktest(
                 continue
             }
 
-            // Fetch full day candles in parallel
-            val results = withContext(Dispatchers.IO) {
-                val c = async { viewModel.fetchHistoricalData(appId, token, ceSymbol, "1", dateStr, dateStr) }
-                val p = async { viewModel.fetchHistoricalData(appId, token, peSymbol, "1", dateStr, dateStr) }
-                val bc = async { viewModel.fetchHistoricalData(appId, token, buyCeSymbol, "1", dateStr, dateStr) }
-                val bp = async { viewModel.fetchHistoricalData(appId, token, buyPeSymbol, "1", dateStr, dateStr) }
-                listOf(c.await(), p.await(), bc.await(), bp.await())
-            }
-
-            val ceCandlesFull = results[0]?.let { expandTo5SecondCandles(parseFyersCandles(it)) } ?: emptyList()
-            val peCandlesFull = results[1]?.let { expandTo5SecondCandles(parseFyersCandles(it)) } ?: emptyList()
-            val bCeCandlesFull = results[2]?.let { expandTo5SecondCandles(parseFyersCandles(it)) } ?: emptyList()
-            val bPeCandlesFull = results[3]?.let { expandTo5SecondCandles(parseFyersCandles(it)) } ?: emptyList()
-
-            val deployedCapital = (soldCe.entryPrice + soldPe.entryPrice + buyCe.entryPrice + buyPe.entryPrice) * lotSize
-            val targetProfit = deployedCapital * 0.01 / lotSize
-
             val allTimes = ceCandlesFull.map { it.timestamp }.filter { it >= entryTimestamp && it.substring(11, 16) <= "14:50" }
             var exitTime = "$dateStr 14:50:00"
             var exitReason = "TIME_EXIT"
             var finalNetPts = 0.0
 
             println("\n--------------------------------------------------------------------------------------------------------")
-            println("5-SECOND INTERVAL TIMESTAMP LOG (From Entry $entryTimestamp onwards):")
+            println("MONITORING (From Entry $entryTimestamp to 14:50):")
             println("--------------------------------------------------------------------------------------------------------")
 
             for (t in allTimes) {
-                val spotC = spotCandles.firstOrNull { it.timestamp == t }?.close ?: 0.0
                 val ceLtp = ceCandlesFull.firstOrNull { it.timestamp == t }?.close ?: soldCe.entryPrice
                 val buyCeLtp = bCeCandlesFull.firstOrNull { it.timestamp == t }?.close ?: buyCe.entryPrice
                 val peLtp = peCandlesFull.firstOrNull { it.timestamp == t }?.close ?: soldPe.entryPrice
@@ -325,19 +272,21 @@ suspend fun runIronFlyBacktest(
                 val pePnl = if (soldPe.isClosed) (soldPe.entryPrice - soldPe.exitPrice) else (soldPe.entryPrice - peLtp)
                 val buyPePnl = if (buyPe.isClosed) (buyPe.exitPrice - buyPe.entryPrice) else (buyPeLtp - buyPe.entryPrice)
 
-                val mtmPts = cePnl + buyCePnl + pePnl + buyPePnl
-                println("⏱️ [$t] Spot: ${String.format("%.2f", spotC)} | SoldCE: ${String.format("%.2f", ceLtp)} (SL:${String.format("%.2f", soldCe.currentSl)}) | SoldPE: ${String.format("%.2f", peLtp)} (SL:${String.format("%.2f", soldPe.currentSl)}) | MTM P&L: ${String.format("%.2f", mtmPts)} pts")
+                val mtmRupees = (cePnl + buyCePnl + pePnl + buyPePnl) * lotSize
+                val targetProfit = 1200.0
 
-                /*if (mtmPts >= targetProfit) {
+                if (mtmRupees >= targetProfit) {
                     exitTime = t
-                    exitReason = "PROFIT_TARGET_1%"
+                    exitReason = "PROFIT_TARGET_1200"
                     soldCe.exitPrice = ceLtp
                     buyCe.exitPrice = buyCeLtp
                     soldPe.exitPrice = peLtp
                     buyPe.exitPrice = buyPeLtp
-                    println("  💰 [TARGET HIT] Profit target reached at $t (MTM: ${String.format("%.2f", mtmPts)} pts >= Target ${String.format("%.2f", targetProfit)} pts)")
+                    soldCe.isClosed = true
+                    soldPe.isClosed = true
+                    println("  💰 [PROFIT TARGET HIT] MTM Profit: ₹${String.format("%.2f", mtmRupees)} >= ₹1,200 target at $t. Exiting trade!")
                     break
-                }*/
+                }
 
                 if (soldCe.isClosed && soldPe.isClosed) {
                     exitTime = t
@@ -396,6 +345,7 @@ suspend fun runIronFlyBacktest(
             )
 
             println("  • Trade Result: PnL = ${String.format("%.2f", finalNetPts)} pts (₹${String.format("%,.2f", finalNetRs)}) | Reason: $exitReason")
+            println("✅ [COMPLETED] Backtest finished for date $dateStr. Total trades recorded: ${completedTrades.size}\n")
 
         } catch (e: Exception) {
             println("  • Error processing date $currDate: ${e.message}")
@@ -405,16 +355,14 @@ suspend fun runIronFlyBacktest(
     }
 
     println("\n========================================================================================================================")
-    println("WEEKLY EXPIRY IRON FLY STRATEGY BACKTEST REPORT (8 Oct 2026)")
+    println("WEEKLY EXPIRY IRON FLY STRATEGY BACKTEST REPORT (Strict 5s Data)")
     println("========================================================================================================================")
     if (completedTrades.isEmpty()) {
         println("⚠️ No trades executed.")
     } else {
         println("| # | Date | Expiry | Index | Strike | Entry | Exit Time | Exit Reason | P&L (Pts) | P&L (₹) | Cum. P&L (Pts) | Cum. P&L (₹) |")
-        println("|---|------|--------|-------|--------|-------|-----------|-------------|-----------|---------|----------------|--------------|")
-        for (t in completedTrades) {
-            val sign = if (t.netPnlPoints >= 0) "[WIN +]" else "[LOSS -]"
-            println("| ${t.tradeNo} | ${t.date} | ${t.expiryDate} | ${t.indexSymbol} | ${t.soldStrike} | ${t.entryTime.substring(11, 16)} | ${t.exitTime.substring(11, 16)} | ${t.exitReason} | $sign ${String.format("%.2f", t.netPnlPoints)} pts | ₹${String.format("%,.2f", t.netPnlRupees)} | ${String.format("%.2f", t.cumulativePnlPoints)} pts | ₹${String.format("%,.2f", t.cumulativePnlRupees)} |")
+        for (r in completedTrades) {
+            println("| ${r.tradeNo} | ${r.date} | ${r.expiryDate} | ${r.indexSymbol} | ${r.soldStrike} | ${r.entryTime} | ${r.exitTime} | ${r.exitReason} | ${String.format("%.2f", r.netPnlPoints)} | ${String.format("%,.2f", r.netPnlRupees)} | ${String.format("%.2f", r.cumulativePnlPoints)} | ${String.format("%,.2f", r.cumulativePnlRupees)} |")
         }
     }
     println("========================================================================================================================")

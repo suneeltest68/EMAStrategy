@@ -54,11 +54,13 @@ class IronFlyTradingRunner(
                     val squareOffTime = LocalTime.of(14, 50)
                     val marketClose = LocalTime.of(14, 52)
 
-                    if (currentTime.isBefore(entryWindowStart)) {
-                        val targetEntry = LocalDateTime.of(today, entryWindowStart)
-                        val millisToWait = Duration.between(LocalDateTime.now(istZone), targetEntry).toMillis()
+                    val nowZoned = ZonedDateTime.now(istZone)
+                    val targetEntry = ZonedDateTime.of(today, entryWindowStart, istZone)
+
+                    if (nowZoned.isBefore(targetEntry)) {
+                        val millisToWait = Duration.between(nowZoned, targetEntry).toMillis()
                         if (millisToWait > 0) {
-                            println("[IronFly] Waiting for entry window (11:00). Sleeping ${millisToWait / 1000}s...")
+                            println("[IronFly] Waiting for entry window (11:00 IST). Sleeping ${millisToWait / 1000}s...")
                             delay(min(millisToWait, 60_000L))
                         } else {
                             delay(1000L)
@@ -81,6 +83,9 @@ class IronFlyTradingRunner(
                     }
 
                     println("[IronFly] Selected Index for today: $selectedIndex")
+                    val startMsg = "🚀 [IronFly] Strategy search started at 11:00 AM for index: $selectedIndex. Connecting WebSocket & scanning for ATM premium gap <= 15%..."
+                    println(startMsg)
+                    TelegramNotifier.sendAlert(startMsg)
 
                     // Entry Search Window (WebSocket powered)
                     var position: IronFlyPosition? = null

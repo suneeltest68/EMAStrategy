@@ -1,5 +1,6 @@
 package com.example.util
 
+import com.example.viewmodel.AuthViewModel
 import com.example.strategy.Candle
 import org.json.JSONObject
 import java.time.Instant
@@ -11,25 +12,19 @@ import kotlin.math.round
 
 data class ExpiredDerivativeResult(
     val symbol: String,
+    val expiryDate: String,
     val candles: List<Candle>
+)
+
+data class ResolvedOption(
+    val symbol: String,
+    val expiryDate: String
 )
 
 object OptionUtils {
 
-    private val optionChainCache = mutableMapOf<String, JSONObject>()
-    private val expiryCache = mutableMapOf<String, JSONObject>()
-    private val contractsCache = mutableMapOf<String, JSONObject>()
-    private val fnoHistoryCache = mutableMapOf<String, JSONObject>()
-
     /**
      * Identifies the At-The-Money (ATM) strike price given the current underlying spot price and strike interval.
-     * - NIFTY strike interval: 50
-     * - BANKNIFTY strike interval: 100
-     * - SENSEX strike interval: 100
-     *
-     * @param spotPrice Current underlying spot price
-     * @param strikeInterval Strike interval
-     * @return Nearest ATM strike price
      */
     fun calculateAtmStrike(spotPrice: Double, strikeInterval: Int = 50): Int {
         return (round(spotPrice / strikeInterval) * strikeInterval).toInt()
@@ -45,36 +40,40 @@ object OptionUtils {
 
     /**
      * Resolves the exact weekly option symbol strictly via live Fyers option chain lookup.
-     * @param expiryIndex 0 for current week (1st), 1 for bi-weekly (2nd), 2 for 3rd week, etc.
      */
     suspend fun resolveWeeklyOptionSymbol(
-        viewModel: com.example.viewmodel.AuthViewModel,
+        viewModel: AuthViewModel,
         appId: String,
         token: String,
         indexSymbol: String,
         spotPrice: Double,
         optionType: String,
-        expiryIndex: Int = 0,
-        useCache: Boolean = true
+        expiryIndex: Int = 0
     ): String {
-        val strikeInterval = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true) || indexSymbol.contains("SENSEX", ignoreCase = true)) 100 else 50
+        return resolveWeeklyOptionWithExpiry(viewModel, appId, token, indexSymbol, spotPrice, optionType, expiryIndex).symbol
+    }
+
+    suspend fun resolveWeeklyOptionWithExpiry(
+        viewModel: AuthViewModel,
+        appId: String,
+        token: String,
+        indexSymbol: String,
+        spotPrice: Double,
+        optionType: String,
+        expiryIndex: Int = 0
+    ): ResolvedOption {
+        val strikeInterval = if (indexSymbol.contains("SENSEX", ignoreCase = true)) 100 else 50
         val atmStrike = calculateAtmStrike(spotPrice, strikeInterval)
 
-        val cacheKey = indexSymbol
-        var optionChain = if (useCache) optionChainCache[cacheKey] else null
+        var optionChain: JSONObject? = null
+        var attempts = 0
+        while (attempts < 3 && optionChain == null) {
+            if (attempts > 0) kotlinx.coroutines.delay(500L * attempts)
+            optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
+            attempts++
+        }
         if (optionChain == null) {
-            var attempts = 0
-            while (attempts < 3 && optionChain == null) {
-                if (attempts > 0) kotlinx.coroutines.delay(500L * attempts)
-                optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10, useCache = useCache)
-                attempts++
-            }
-            if (optionChain == null) {
-                throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol after retries (Rate limit 429)")
-            }
-            if (useCache) {
-                optionChainCache[cacheKey] = optionChain
-            }
+            throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol after retries (Rate limit 429)")
         }
 
         var expiryDateStr: String? = null
@@ -92,10 +91,10 @@ object OptionUtils {
             throw IllegalStateException("Could not find expiry date for expiryIndex $expiryIndex in option chain response")
         }
 
-        val day = expiryDateStr.substring(0, 2)
         val monthNum = expiryDateStr.substring(3, 5)
         val fullYear = if (expiryDateStr.length >= 10) expiryDateStr.substring(6, 10) else "20" + expiryDateStr.substring(8, 10)
         val shortYear = fullYear.substring(2, 4)
+        val day = expiryDateStr.substring(0, 2)
         val isoDate = "$fullYear-$monthNum-$day"
 
         val monthCode = when (monthNum) {
@@ -111,21 +110,29 @@ object OptionUtils {
             "10" -> "O"
             "11" -> "N"
             "12" -> "D"
-            else -> ""
+            else -> "O"
         }
 
-        if (monthCode.isEmpty()) {
-            throw IllegalStateException("Invalid month number $monthNum in expiry date $expiryDateStr")
+        val monthAbbr = when (monthNum) {
+            "01" -> "JAN"
+            "02" -> "FEB"
+            "03" -> "MAR"
+            "04" -> "APR"
+            "05" -> "MAY"
+            "06" -> "JUN"
+            "07" -> "JUL"
+            "08" -> "AUG"
+            "09" -> "SEP"
+            "10" -> "OCT"
+            "11" -> "NOV"
+            "12" -> "DEC"
+            else -> "OCT"
         }
 
-        val targetExpiryCode = "$shortYear$monthCode$day"
-        val underlyingPrefix = when {
-            indexSymbol.contains("BANKNIFTY", ignoreCase = true) -> "NSE:BANKNIFTY"
-            indexSymbol.contains("SENSEX", ignoreCase = true) -> "BSE:SENSEX"
-            else -> "NSE:NIFTY"
-        }
+        val weeklyExpiryCode = "$shortYear$monthCode$day"
+        val monthlyExpiryCode = "$shortYear$monthAbbr"
 
-        // First attempt: Search optionsChain array for exact matching contract with targetExpiryCode or isoDate
+        // First attempt: Search optionsChain array for exact matching contract with expiry codes or isoDate
         if (optionChain.has("data")) {
             val dataObj = optionChain.getJSONObject("data")
             val optionsArray = dataObj.optJSONArray("optionsChain") ?: dataObj.optJSONArray("options")
@@ -139,20 +146,17 @@ object OptionUtils {
 
                     val isStrikeMatch = abs(strike - atmStrike.toDouble()) < 1.0
                     val isTypeMatch = type.equals(optionType, ignoreCase = true) || symbol.endsWith(optionType)
-                    val isExpiryMatch = symbol.contains(targetExpiryCode) ||
+                    val isExpiryMatch = symbol.contains(weeklyExpiryCode) || symbol.contains(monthlyExpiryCode) ||
                             (optExpiry.isNotEmpty() && (optExpiry == isoDate || optExpiry == expiryDateStr || optExpiry.contains(isoDate)))
 
                     if (isStrikeMatch && isTypeMatch && isExpiryMatch && symbol.isNotEmpty()) {
-                        return symbol
+                        return ResolvedOption(symbol, isoDate)
                     }
                 }
             }
         }
 
-        println("   • [DEBUG] Fetching Underlying Expired Contracts for Expiry: $expiryDateStr...")
-
-        // Second attempt: Return constructed symbol
-        return "$underlyingPrefix$targetExpiryCode$atmStrike$optionType"
+        return ResolvedOption(buildWeeklyOptionSymbol(indexSymbol, expiryDateStr, atmStrike.toDouble(), optionType), isoDate)
     }
 
     /**
@@ -197,11 +201,7 @@ object OptionUtils {
             "10" -> "O"
             "11" -> "N"
             "12" -> "D"
-            else -> ""
-        }
-
-        if (monthCode.isEmpty()) {
-            throw IllegalStateException("Invalid month number $monthNum in expiry date $expiryDateStr")
+            else -> "O"
         }
 
         val targetExpiryCode = "$shortYear$monthCode$day"
@@ -216,123 +216,11 @@ object OptionUtils {
     }
 
     /**
-     * Resolves the official Fyers option symbol directly from the fetched option chain JSON response.
-     */
-    fun resolveSymbolFromOptionChain(
-        optionChain: JSONObject,
-        indexSymbol: String,
-        expiryDateStr: String,
-        strike: Double,
-        optionType: String
-    ): String {
-        val day = expiryDateStr.substring(0, 2)
-        val monthNum = expiryDateStr.substring(3, 5)
-        val fullYear = if (expiryDateStr.length >= 10) expiryDateStr.substring(6, 10) else "20" + expiryDateStr.substring(8, 10)
-        val shortYear = fullYear.substring(2, 4)
-        val isoDate = "$fullYear-$monthNum-$day"
-
-        val monthCode = when (monthNum) {
-            "01" -> "1"
-            "02" -> "2"
-            "03" -> "3"
-            "04" -> "4"
-            "05" -> "5"
-            "06" -> "6"
-            "07" -> "7"
-            "08" -> "8"
-            "09" -> "9"
-            "10" -> "O"
-            "11" -> "N"
-            "12" -> "D"
-            else -> ""
-        }
-
-        val targetExpiryCode = "$shortYear$monthCode$day"
-
-        if (optionChain.has("data")) {
-            val dataObj = optionChain.getJSONObject("data")
-            val optionsArray = dataObj.optJSONArray("optionsChain") ?: dataObj.optJSONArray("options")
-            if (optionsArray != null) {
-                for (i in 0 until optionsArray.length()) {
-                    val optObj = optionsArray.getJSONObject(i)
-                    val optStrike = optObj.optDouble("strike_price", optObj.optDouble("strikePrice", optObj.optDouble("strike", 0.0)))
-                    val symbol = optObj.optString("symbol", "")
-                    val type = optObj.optString("option_type", optObj.optString("optionType", ""))
-                    val optExpiry = optObj.optString("expiry", optObj.optString("expiry_date", ""))
-
-                    val isStrikeMatch = abs(optStrike - strike) < 1.0
-                    val isTypeMatch = type.equals(optionType, ignoreCase = true) || symbol.endsWith(optionType)
-                    val isExpiryMatch = symbol.contains(targetExpiryCode) ||
-                            (optExpiry.isNotEmpty() && (optExpiry == isoDate || optExpiry == expiryDateStr || optExpiry.contains(isoDate)))
-
-                    if (isStrikeMatch && isTypeMatch && isExpiryMatch && symbol.isNotEmpty()) {
-                        return symbol
-                    }
-                }
-            }
-        }
-
-        // Fallback constructed symbol
-        val underlyingPrefix = when {
-            indexSymbol.contains("BANKNIFTY", ignoreCase = true) -> "NSE:BANKNIFTY"
-            indexSymbol.contains("SENSEX", ignoreCase = true) -> "BSE:SENSEX"
-            else -> "NSE:NIFTY"
-        }
-        return "$underlyingPrefix$targetExpiryCode${strike.toInt()}$optionType"
-    }
-    suspend fun resolveMonthlyOptionSymbol(
-        viewModel: com.example.viewmodel.AuthViewModel,
-        appId: String,
-        token: String,
-        indexSymbol: String,
-        spotPrice: Double,
-        optionType: String,
-        monthIndex: Int = 0
-    ): String {
-        val strikeInterval = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true) || indexSymbol.contains("SENSEX", ignoreCase = true)) 100 else 50
-        val atmStrike = calculateAtmStrike(spotPrice, strikeInterval)
-
-        val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
-            ?: throw IllegalStateException("Failed to fetch option chain from Fyers API for symbol $indexSymbol")
-
-        if (optionChain.has("data")) {
-            val dataObj = optionChain.getJSONObject("data")
-            val optionsArray = dataObj.optJSONArray("optionsChain") ?: dataObj.optJSONArray("options")
-            if (optionsArray != null) {
-                for (i in 0 until optionsArray.length()) {
-                    val optObj = optionsArray.getJSONObject(i)
-                    val strike = optObj.optDouble("strike_price", optObj.optDouble("strikePrice", optObj.optDouble("strike", 0.0)))
-                    val symbol = optObj.optString("symbol", "")
-                    val type = optObj.optString("option_type", optObj.optString("optionType", ""))
-
-                    if (abs(strike - atmStrike.toDouble()) < 1.0 &&
-                        (type.equals(optionType, ignoreCase = true) || symbol.endsWith(optionType)) &&
-                        symbol.matches(Regex(".*\\d{2}[A-Z]{3}\\d+${optionType}"))
-                    ) {
-                        return symbol
-                    }
-                }
-            }
-        }
-
-        val targetDate = java.time.LocalDate.now().plusMonths(monthIndex.toLong())
-        val year = targetDate.format(java.time.format.DateTimeFormatter.ofPattern("yy"))
-        val month3Letter = targetDate.format(java.time.format.DateTimeFormatter.ofPattern("MMM")).uppercase()
-        val underlyingPrefix = when {
-            indexSymbol.contains("BANKNIFTY", ignoreCase = true) -> "NSE:BANKNIFTY"
-            indexSymbol.contains("SENSEX", ignoreCase = true) -> "BSE:SENSEX"
-            else -> "NSE:NIFTY"
-        }
-
-        return "$underlyingPrefix$year$month3Letter$atmStrike$optionType"
-    }
-
-    /**
-     * Resolves and fetches historical 1-min candle data for an EXPIRED weekly option contract
-     * using Fyers' dedicated expired F&O APIs with in-memory caching.
+     * Resolves and fetches historical candle data for an EXPIRED weekly option contract
+     * using Fyers' dedicated expired F&O APIs with local symbol building (zero extra API calls).
      */
     suspend fun resolveAndFetchExpiredDerivativeCandles(
-        viewModel: com.example.viewmodel.AuthViewModel,
+        viewModel: AuthViewModel,
         appId: String,
         token: String,
         indexSymbol: String,
@@ -341,99 +229,27 @@ object OptionUtils {
         tradeDate: String,
         expiryIndex: Int = 0
     ): ExpiredDerivativeResult {
-        val strikeInterval = if (indexSymbol.contains("BANKNIFTY", ignoreCase = true) || indexSymbol.contains("SENSEX", ignoreCase = true)) 100 else 50
+        val strikeInterval = if (indexSymbol.contains("SENSEX", ignoreCase = true)) 100 else 50
         val atmStrike = calculateAtmStrike(spotPrice, strikeInterval)
 
-        val rangeFrom = LocalDate.parse(tradeDate).minusDays(15).toString()
-        val rangeTo = LocalDate.parse(tradeDate).plusDays(15).toString()
-        val expiryCacheKey = "$indexSymbol-$rangeFrom-$rangeTo"
+        val formattedExpiryStr = tradeDate.substring(8, 10) + "-" + tradeDate.substring(5, 7) + "-" + tradeDate.substring(0, 4)
+        val optionSymbol = buildWeeklyOptionSymbol(indexSymbol, formattedExpiryStr, atmStrike.toDouble(), optionType)
 
-        var expiryJson = expiryCache[expiryCacheKey]
-        if (expiryJson == null) {
-//            println("   • [DEBUG] Resolving expiry dates for tradeDate=$tradeDate (range: $rangeFrom to $rangeTo)...")
-            expiryJson = viewModel.fetchHistoryExpiryDates(appId, token, indexSymbol, rangeFrom, rangeTo)
-            if (expiryJson != null) expiryCache[expiryCacheKey] = expiryJson
-        }
-
-        var targetExpiry = tradeDate
-        if (expiryJson != null && expiryJson.has("data")) {
-            val dataObj = expiryJson.getJSONObject("data")
-            if (dataObj.has("expiry_dates")) {
-                val optionsExpiries = dataObj.getJSONObject("expiry_dates").optJSONArray("options")
-                if (optionsExpiries != null) {
-                    val validExpiries = mutableListOf<String>()
-                    for (i in 0 until optionsExpiries.length()) {
-                        val expDate = optionsExpiries.getString(i)
-                        if (expDate >= tradeDate) {
-                            validExpiries.add(expDate)
-                        }
-                    }
-                    validExpiries.sort()
-                    targetExpiry = if (expiryIndex in validExpiries.indices) {
-                        validExpiries[expiryIndex]
-                    } else {
-                        validExpiries.firstOrNull() ?: tradeDate
-                    }
-                }
-            }
-        }
-
-        val contractsCacheKey = "$indexSymbol-$targetExpiry"
-        var contractsJson = contractsCache[contractsCacheKey]
-        if (contractsJson == null) {
-            contractsJson = viewModel.fetchHistoryUnderlyingSymbols(appId, token, indexSymbol, targetExpiry)
-            if (contractsJson != null) contractsCache[contractsCacheKey] = contractsJson
-        }
-
-        var optionSymbol = ""
-        if (contractsJson != null && contractsJson.has("data")) {
-            val dataObj = contractsJson.getJSONObject("data")
-            if (dataObj.has("contracts")) {
-                val optionsArray = dataObj.getJSONObject("contracts").optJSONArray("options")
-                if (optionsArray != null) {
-                    val strikeStr = atmStrike.toString()
-                    for (i in 0 until optionsArray.length()) {
-                        val sym = optionsArray.getString(i)
-                        if (sym.contains(strikeStr) && sym.endsWith(optionType)) {
-                            optionSymbol = sym
-                            break
-                        }
-                    }
-                }
-            }
-        }
-
-        if (optionSymbol.isEmpty()) {
-            val underlyingPrefix = when {
-                indexSymbol.contains("BANKNIFTY", ignoreCase = true) -> "NSE:BANKNIFTY"
-                indexSymbol.contains("SENSEX", ignoreCase = true) -> "BSE:SENSEX"
-                else -> "NSE:NIFTY"
-            }
-            optionSymbol = "$underlyingPrefix$targetExpiry$atmStrike$optionType"
-        }
-        println("Trade date $tradeDate Expiry $targetExpiry ")
-
-
-        val fnoCacheKey = "$optionSymbol-$tradeDate"
-        var fnoHistory = fnoHistoryCache[fnoCacheKey]
-        if (fnoHistory == null) {
-            fnoHistory = viewModel.fetchHistoryFNOExpired(
-                appId = appId,
-                accessToken = token,
-                fnoSymbol = optionSymbol,
-                rangeFrom = tradeDate,
-                rangeTo = tradeDate,
-                resolution = "1"
-            )
-            if (fnoHistory != null) fnoHistoryCache[fnoCacheKey] = fnoHistory
-        }
+        val fnoHistory = viewModel.fetchHistoryFNOExpired(
+            appId = appId,
+            accessToken = token,
+            fnoSymbol = optionSymbol,
+            rangeFrom = tradeDate,
+            rangeTo = tradeDate,
+            resolution = "5S"
+        )
 
         if (fnoHistory == null || !fnoHistory.has("candles") || fnoHistory.optJSONArray("candles")?.length() == 0) {
             throw IllegalStateException("Failed to fetch FNO expired history for $optionSymbol on $tradeDate.")
         }
 
         val parsed = parseExpiredCandles(fnoHistory)
-        return ExpiredDerivativeResult(optionSymbol, parsed)
+        return ExpiredDerivativeResult(optionSymbol, tradeDate, parsed)
     }
 
     private fun parseExpiredCandles(json: JSONObject): List<Candle> {
@@ -461,9 +277,6 @@ object OptionUtils {
             .sortedBy { if (it.epoch > 0) it.epoch else 0L }
     }
 
-    /**
-     * Parses an option chain JSONObject to find the exact option contract symbol matching strike and type (CE/PE).
-     */
     fun findOptionSymbolFromChain(optionChainJson: JSONObject, targetStrike: Int, optionType: String): String? {
         try {
             val optionsArray = optionChainJson.optJSONArray("options") ?: optionChainJson.optJSONArray("data") ?: return null
@@ -486,7 +299,7 @@ object OptionUtils {
     /**
      * Extracts Last Traded Price (LTP) for a given symbol from Fyers GetStockQuotes response.
      */
-    fun extractLtpFromQuotes(quotesJson: org.json.JSONObject, symbol: String): Double? {
+    fun extractLtpFromQuotes(quotesJson: JSONObject, symbol: String): Double? {
         try {
             val dataArray = quotesJson.optJSONArray("d") ?: return null
             for (i in 0 until dataArray.length()) {
