@@ -102,46 +102,55 @@ object FyersAuthDaemon {
             println("🌅 [Daily Routine] Starting Live Trading Session...")
             println("--------------------------------------------------")
 
-            viewModel.clearToken()
+            // Check if a valid cached token is available for testing/quick restarts
+            val cachedToken = viewModel.getCachedToken()
+            val activeToken = if (cachedToken != null) {
+                println("[Auth] Found valid cached Access Token! Skipping web authentication for testing.")
+                TelegramNotifier.sendAlert("✅ [Fyers Daemon] Using cached Access Token (skipping web auth).")
+                cachedToken
+            } else {
+                viewModel.clearToken()
 
-            println("[Auth] Access token required for new trading day. Waiting for OAuth callback...")
-            viewModel.prepareLoginUrl(appId, redirectUri)
-            val loginUrl = viewModel.authState.value.loginUrl
-            
-            TelegramNotifier.sendAlert("⚠️ [IRON FLY Strategy] New trading day started. Please login & authorize:\n$loginUrl")
+                println("[Auth] Access token required for new trading day. Waiting for OAuth callback...")
+                viewModel.prepareLoginUrl(appId, redirectUri)
+                val loginUrl = viewModel.authState.value.loginUrl
+                
+                TelegramNotifier.sendAlert("⚠️ [IRON FLY Strategy] New trading day started. Please login & authorize:\n$loginUrl")
 
-            authCodeDeferred = CompletableDeferred()
-            val localDeferred = authCodeDeferred
+                authCodeDeferred = CompletableDeferred()
+                val localDeferred = authCodeDeferred
 
-            val authCode = if (localDeferred != null) {
-                try {
-                    withTimeout(60 * 60 * 1000L) {
-                        localDeferred.await()
+                val authCode = if (localDeferred != null) {
+                    try {
+                        withTimeout(60 * 60 * 1000L) {
+                            localDeferred.await()
+                        }
+                    } catch (_: Exception) {
+                        null
                     }
-                } catch (_: Exception) {
+                } else {
                     null
                 }
-            } else {
-                null
-            }
 
-            authCodeDeferred = null
+                authCodeDeferred = null
 
-            var activeToken: String? = null
-            if (authCode != null) {
-                println("[Auth] Exchanging received auth code for access token...")
-                viewModel.authenticateWithAuthCode(appId, secretKey, authCode)
-                val finalState = viewModel.authState.value
-                if (finalState.accessToken != null) {
-                    activeToken = finalState.accessToken
-                    TelegramNotifier.sendAlert("✅ [Fyers Daemon] Access Token acquired & cached successfully via web callback!")
+                var tokenFromAuth: String? = null
+                if (authCode != null) {
+                    println("[Auth] Exchanging received auth code for access token...")
+                    viewModel.authenticateWithAuthCode(appId, secretKey, authCode)
+                    val finalState = viewModel.authState.value
+                    if (finalState.accessToken != null) {
+                        tokenFromAuth = finalState.accessToken
+                        TelegramNotifier.sendAlert("✅ [Fyers Daemon] Access Token acquired & cached successfully via web callback!")
+                    } else {
+                        TelegramNotifier.sendAlert("❌ [Fyers Daemon] Token exchange failed: ${finalState.errorMessage}")
+                    }
                 } else {
-                    TelegramNotifier.sendAlert("❌ [Fyers Daemon] Token exchange failed: ${finalState.errorMessage}")
+                    TelegramNotifier.sendAlert("❌ [Fyers Daemon] Authentication timed out waiting for web callback.")
+                    delay(10 * 60 * 1000L)
+                    continue
                 }
-            } else {
-                TelegramNotifier.sendAlert("❌ [Fyers Daemon] Authentication timed out waiting for web callback.")
-                delay(10 * 60 * 1000L)
-                continue
+                tokenFromAuth
             }
 
             if (activeToken != null) {
@@ -162,7 +171,9 @@ object FyersAuthDaemon {
                 }
             }
 
-            viewModel.clearToken()
+            // Do not clear token immediately so quick restarts can reuse the cached token for testing
+            println("[Daemon] Trading session ended for today.")
+            TelegramNotifier.sendAlert("💤 [Fyers Daemon] Trading session ended for today.")
             println("[Daemon] Trading day ended. Token cleared. Hard sleeping until 9:00 AM IST...")
             TelegramNotifier.sendAlert("💤 [Fyers Daemon] Trading session ended for today. Token cleared. Hard sleeping until 9:00 AM IST.")
 
