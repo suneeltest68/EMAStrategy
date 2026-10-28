@@ -6,6 +6,7 @@ import com.example.util.OptionUtils
 import com.example.viewmodel.AuthViewModel
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import java.io.File
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
@@ -22,10 +23,10 @@ class ContinuousMorningStrategyRunner(
     fun startContinuousSession() {
         scope.launch {
             println("==============================================================")
-            println("STARTING MORNING STRATEGY OI ALERT BOT (9:15 AM START)")
+            println("STARTING MORNING STRATEGY OI ALERT BOT (9:45 AM START)")
             println("==============================================================\n")
 
-            TelegramNotifier.sendAlert("🚀 Morning Strategy OI Alert Bot Started (9:15 AM Onward).")
+            TelegramNotifier.sendAlert("🚀 Morning Strategy OI Alert Bot Started (9:45 AM - 10:10 AM Session).")
 
             while (isActive) {
                 val now = LocalDateTime.now(istZone)
@@ -33,15 +34,15 @@ class ContinuousMorningStrategyRunner(
                 val currentTime = now.toLocalTime()
                 val dateStr = today.toString()
 
-                val marketOpen = LocalTime.of(9, 15)
-                val marketClose = LocalTime.of(15, 25)
+                val marketOpen = LocalTime.of(9, 45)
+                val marketClose = LocalTime.of(10, 10)
 
-                // 1. Check market hours (9:15 AM onwards)
+                // 1. Check market hours
                 if (currentTime.isBefore(marketOpen)) {
                     val targetEntry = LocalDateTime.of(today, marketOpen)
                     val millisToWait = Duration.between(LocalDateTime.now(istZone), targetEntry).toMillis()
                     if (millisToWait > 0) {
-                        println("[MorningAlertBot] Pre-market. Sleeping ${millisToWait / 1000}s until 9:15 AM...")
+                        println("[MorningAlertBot] Pre-market. Sleeping ${millisToWait / 1000}s until 9:45 AM...")
                         delay(minOf(millisToWait, 60_000L))
                     } else {
                         delay(1000L)
@@ -50,8 +51,11 @@ class ContinuousMorningStrategyRunner(
                 }
 
                 if (currentTime.isAfter(marketClose)) {
-                    println("[MorningAlertBot] Market closed for today. Waiting for tomorrow.")
-                    delay(3600_000L * 4)
+                    println("[MorningAlertBot] Market close (10:10 AM) reached for today. Waiting for tomorrow.")
+                    val nowZoned = ZonedDateTime.now(istZone)
+                    val tomorrow9Am = nowZoned.plusDays(1).withHour(9).withMinute(0).withSecond(0).withNano(0)
+                    val waitMillis = Duration.between(nowZoned, tomorrow9Am).toMillis()
+                    delay(waitMillis)
                     continue
                 }
 
@@ -64,18 +68,19 @@ class ContinuousMorningStrategyRunner(
 
                 if (selectedIndex == null) {
                     println("[MorningAlertBot] Today is ${today.dayOfWeek}. No trade/alert scheduled.")
-                    delay(3600_000L * 4)
+                    val nowZoned = ZonedDateTime.now(istZone)
+                    val tomorrow9Am = nowZoned.plusDays(1).withHour(9).withMinute(0).withSecond(0).withNano(0)
+                    val waitMillis = Duration.between(nowZoned, tomorrow9Am).toMillis()
+                    delay(waitMillis)
                     continue
                 }
 
-                // Calculate current 5-minute window slot index (hour * 12 + minute / 5)
+                // Calculate current 5-minute window slot index
                 val currentWindowSlot = currentTime.hour * 12 + (currentTime.minute / 5)
                 val windowKey = "$selectedIndex-$dateStr"
                 val lastAlertSlot = lastAlertWindows[windowKey] ?: -1
 
-                // If we already alerted for this 5-minute window slot, stop making API calls until the next window!
                 if (currentWindowSlot == lastAlertSlot) {
-                    println("ℹ️ [MorningAlertBot] Already alerted for 5-min window slot $currentWindowSlot. Pausing API calls until next window...")
                     delay(15_000L)
                     continue
                 }
@@ -109,8 +114,6 @@ class ContinuousMorningStrategyRunner(
                                 📌 Reason: ${signal.reason}
                                 [ALERT] $nowStr IST
                             """.trimIndent()
-                            TelegramNotifier.sendAlert(alertMsg)
-
                             // Generate OI Chart and Send via Telegram photo
                             try {
                                 val spotQuotes = viewModel.fetchStockQuotes(appId, token, selectedIndex)
@@ -131,7 +134,18 @@ class ContinuousMorningStrategyRunner(
                                 println("❌ [Telegram Error] Failed to generate/send OI chart photo: ${e.message}")
                             }
 
-                            println("⏳ [MorningAlertBot] Alert sent for window slot $currentWindowSlot. Pausing API calls until next 5-min window...")
+                            // Delete all caches and stop execution for today
+                            deleteAllCaches()
+                            val stopMsg = "🛑 [MorningAlertBot] Morning Strategy identified! Stopping execution for today, deleting all caches, and hard sleeping until tomorrow 9:00 AM IST."
+                            println(stopMsg)
+                            TelegramNotifier.sendAlert(stopMsg)
+
+                            val nowZoned = ZonedDateTime.now(istZone)
+                            val tomorrow9Am = nowZoned.plusDays(1).withHour(9).withMinute(0).withSecond(0).withNano(0)
+                            val waitMillis = Duration.between(nowZoned, tomorrow9Am).toMillis()
+                            println("💤 [MorningAlertBot] Hard sleeping for ${waitMillis / 1000 / 60} minutes until tomorrow 9:00 AM IST...")
+                            delay(waitMillis)
+                            continue
                         }
                     } else {
                         println("ℹ️ [Continuous Check] No strategy trigger met at $currentTime. Retrying in 3s...")
@@ -145,6 +159,21 @@ class ContinuousMorningStrategyRunner(
                 // Poll every 3 seconds for fast reaction time
                 delay(3_000L)
             }
+        }
+    }
+
+    private fun deleteAllCaches() {
+        try {
+            val cacheDir = File("cache")
+            if (cacheDir.exists() && cacheDir.isDirectory) {
+                cacheDir.listFiles()?.forEach { it.delete() }
+            }
+            File("derivatives_cache.json").delete()
+            File("index_cache.json").delete()
+            File("token.json").delete()
+            println("🗑️ [MorningAlertBot] All cache files deleted successfully.")
+        } catch (e: Exception) {
+            println("❌ [MorningAlertBot] Error deleting cache: ${e.message}")
         }
     }
 
@@ -165,7 +194,7 @@ class ContinuousMorningStrategyRunner(
             atmStrike - (2 * strikeInterval)
         )
 
-        // Fetch fresh live option chain
+        // Fetch fresh live option chain (no cache)
         val optionChain = viewModel.fetchOptionChain(appId, token, indexSymbol, 10)
             ?: throw IllegalStateException("Failed to fetch fresh live option chain for $indexSymbol")
         val optionsArray = if (optionChain.has("data")) {

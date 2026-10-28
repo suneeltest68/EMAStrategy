@@ -181,6 +181,13 @@ class FyersRepository {
         }
     }
 
+    private fun checkAndHandleTokenError(errorMsg: String?) {
+        if (errorMsg != null && (errorMsg.contains("-15") || errorMsg.contains("valid token", ignoreCase = true) || errorMsg.contains("expired", ignoreCase = true))) {
+            clearToken()
+            println("[Auth] Invalid/expired token detected ($errorMsg). Token cache cleared.")
+        }
+    }
+
     fun getStockQuotes(appId: String, accessToken: String, symbols: String): Result<JSONObject> {
         return try {
             val fyersClass = FyersClass.getInstance()
@@ -192,8 +199,14 @@ class FyersRepository {
             val error = tuple?.Item2()
 
             if (error == null && json != null) {
+                val errStr = json.optString("message", json.optString("error_message", ""))
+                if (json.optInt("code") == -15 || errStr.contains("valid token", ignoreCase = true)) {
+                    clearToken()
+                    return Result.failure(Exception("Invalid/Expired Fyers Token (-15). Token cache cleared."))
+                }
                 Result.success(json)
             } else {
+                checkAndHandleTokenError(error.toString())
                 Result.failure(Exception("Stock Quotes Error: $error"))
             }
         } catch (e: Exception) {
