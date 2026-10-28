@@ -77,8 +77,10 @@ class IronFlyTradingRunner(
                     // Determine eligible index dynamically based on fetched expiry weekdays (Live: no cache)
                     val selectedIndex = IronFlyStrategyConfig.getEligibleIndexForDate(viewModel, appId, token, today, useCache = false)
                     if (selectedIndex == null) {
-                        println("[IronFly] No eligible index to trade today ($today).")
-                        delay(3600_000L)
+                        val skipMsg = "ℹ️ [IronFly] Today ($today - ${today.dayOfWeek}) is neither an Expiry nor Pre-Expiry day for Nifty or Sensex. Skipping trades."
+                        println(skipMsg)
+                        TelegramNotifier.sendAlert(skipMsg)
+                        delay(3600_000L * 4)
                         continue
                     }
 
