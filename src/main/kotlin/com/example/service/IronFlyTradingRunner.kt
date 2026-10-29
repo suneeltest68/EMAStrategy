@@ -8,6 +8,7 @@ import org.json.JSONObject
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
+import java.io.File
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -85,6 +86,10 @@ class IronFlyTradingRunner(
                     }
 
                     println("[IronFly] Selected Index for today: $selectedIndex")
+                    
+                    // =========================================================================
+                    // 1. Strategy Start Alert: Sends instant Telegram notification at 11:00 AM
+                    // =========================================================================
                     val startMsg = "🚀 [IronFly] Strategy search started at 11:00 AM for index: $selectedIndex. Connecting WebSocket & scanning for ATM premium gap <= 15%..."
                     println(startMsg)
                     TelegramNotifier.sendAlert(startMsg)
@@ -100,7 +105,10 @@ class IronFlyTradingRunner(
                         }
                     }
 
-                    // 1. Connect WebSocket first
+                    // =========================================================================
+                    // 2. WebSocket Connection: Connects to Fyers Real-time WebSocket and 
+                    //    subscribes to the underlying spot symbol for live tick streaming.
+                    // =========================================================================
                     liveStreamer.connectAndSubscribe(listOf(spotSymbol))
 
                     // Wait for WebSocket connection confirmation (OnOpen)
@@ -341,7 +349,14 @@ class IronFlyTradingRunner(
                     }
 
                     liveStreamer.let { try { /* Disconnect socket */ } catch (_: Exception) {} }
-                    delay(3600_000L)
+
+                    // Delete all cache files and hard sleep until tomorrow 9:00 AM IST
+                    deleteAllCaches()
+                    val currentZdt = ZonedDateTime.now(istZone)
+                    val tomorrow9Am = currentZdt.plusDays(1).withHour(9).withMinute(0).withSecond(0).withNano(0)
+                    val waitMillis = Duration.between(currentZdt, tomorrow9Am).toMillis()
+                    println("💤 [IronFly] Trade session completed. All caches deleted. Hard sleeping for ${waitMillis / 1000 / 60} minutes until tomorrow 9:00 AM IST...")
+                    delay(waitMillis)
 
                 } catch (e: Exception) {
                     val criticalErr = "❌ [IronFly CRITICAL ERROR]: ${e.message}"
@@ -395,6 +410,21 @@ class IronFlyTradingRunner(
         TelegramNotifier.sendAlert(eodMsg)
 
         TradingJournalService.logTrade(TradeJournalEntry(activePos.indexSymbol, 0.0, 0.0, lotSize.toInt(), totalRupees, reason))
+    }
+
+    private fun deleteAllCaches() {
+        try {
+            val cacheDir = File("cache")
+            if (cacheDir.exists() && cacheDir.isDirectory) {
+                cacheDir.listFiles()?.forEach { it.delete() }
+            }
+            File("derivatives_cache.json").delete()
+            File("index_cache.json").delete()
+            File("token.json").delete()
+            println("🗑️ [IronFly] All cache files deleted successfully.")
+        } catch (e: Exception) {
+            println("❌ [IronFly] Error deleting cache: ${e.message}")
+        }
     }
 
     private fun extractSpotLtp(quotes: JSONObject?, symbol: String): Double {
