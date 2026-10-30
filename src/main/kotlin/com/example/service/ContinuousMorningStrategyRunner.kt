@@ -19,14 +19,13 @@ class ContinuousMorningStrategyRunner(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val istZone = ZoneId.of("Asia/Kolkata")
     private val lastAlertWindows = ConcurrentHashMap<String, Int>()
+    private var lastStartedDate: LocalDate? = null
 
     fun startContinuousSession() {
         scope.launch {
             println("==============================================================")
             println("STARTING MORNING STRATEGY OI ALERT BOT (9:45 AM START)")
             println("==============================================================\n")
-
-            TelegramNotifier.sendAlert("🚀 Morning Strategy OI Alert Bot Started (9:45 AM - 10:10 AM Session).")
 
             while (isActive) {
                 val now = LocalDateTime.now(istZone)
@@ -48,6 +47,14 @@ class ContinuousMorningStrategyRunner(
                         delay(1000L)
                     }
                     continue
+                }
+
+                // Send 9:45 AM market open start alert once per day exactly when 9:45 AM is reached
+                if (lastStartedDate != today) {
+                    lastStartedDate = today
+                    val openAlert = "🚀 [MorningAlertBot] Market open (9:45 AM IST) reached. Starting live OI analysis (9:45 - 10:10 AM)..."
+                    println(openAlert)
+                    TelegramNotifier.sendAlert(openAlert)
                 }
 
                 if (currentTime.isAfter(marketClose)) {
